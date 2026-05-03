@@ -80,3 +80,6 @@ testpaths = ["tests"]
 markers = [
     "slow: marks tests that require model weights (deselect with '-m \"not slow\"')",
 ]
+
+[tool.ty]
+# Strict-mode opt-in for PYTHON_QU003 (suzerain). See ADR-0003 for rationale.
