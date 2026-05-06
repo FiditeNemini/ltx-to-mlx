@@ -31,6 +31,7 @@ from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
+import mlx.utils
 
 from ltx_core_mlx.model.video_vae.convolution import Conv3dBlock
 from ltx_core_mlx.model.video_vae.normalization import pixel_norm
@@ -187,8 +188,17 @@ class VideoDecoder(nn.Module):
             latent: (B, C, F, H, W) latent in PyTorch layout.
 
         Returns:
-            Pixels (B, 3, F, H, W) in [-1, 1].
+            Pixels (B, 3, F, H, W) in [-1, 1], same dtype as ``latent``.
         """
+        # Cast input to weights dtype and remember caller dtype to restore on
+        # return. Matches Lightricks/LTX-2 PR #179 commit b604d3f — defensive
+        # guard against dtype mismatch between the caller and weights.
+        output_dtype = latent.dtype
+        flat_params = mlx.utils.tree_flatten(self.parameters())
+        weights_dtype = flat_params[0][1].dtype if flat_params else output_dtype
+        if latent.dtype != weights_dtype:
+            latent = latent.astype(weights_dtype)
+
         # Convert BCFHW -> BFHWC for MLX convolutions
         x = latent.transpose(0, 2, 3, 4, 1)
         x = self.denormalize_latent(x)
@@ -218,8 +228,8 @@ class VideoDecoder(nn.Module):
         # height factor — which differs from DepthToSpaceUpsample's (c, p1, p2_H, p3_W).
         x = unpatchify_spatial(x, patch_size=4)
 
-        # BFHWC -> BCFHW
-        return x.transpose(0, 4, 1, 2, 3)
+        # BFHWC -> BCFHW, restored to caller's dtype.
+        return x.transpose(0, 4, 1, 2, 3).astype(output_dtype)
 
     def tiled_decode(
         self,

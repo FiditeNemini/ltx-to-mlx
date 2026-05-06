@@ -29,6 +29,36 @@
     },
     "git_rev": "1c6f633"
   },
+  "post_fix_3": {
+    "g1_two_stage": {
+      "audio": {
+        "mean_abs": 0.09918607771396637,
+        "peak": 0.6226943731307983,
+        "rms": 0.1286984235048294,
+        "shape": [
+          2,
+          64512
+        ]
+      },
+      "mp4": "post_fix_3__g1_two_stage.mp4",
+      "video": {
+        "mean": 78.55061340332031,
+        "p01": 5.0,
+        "p50": 62.0,
+        "p99": 218.0,
+        "shape": [
+          31,
+          448,
+          704,
+          3
+        ],
+        "std": 61.23429489135742
+      },
+      "wall_seconds": 699.2,
+      "wav": "post_fix_3__g1_two_stage.wav"
+    },
+    "git_rev": "463ac76"
+  },
   "pre_fix_1": {
     "g1_two_stage": {
       "audio": {
