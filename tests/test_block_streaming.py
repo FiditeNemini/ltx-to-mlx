@@ -246,6 +246,8 @@ class TestStreamingLTXModel:
             baseline_v, baseline_a = model(**common)
             streamed_v, streamed_a = wrapped(**common)
             mx.eval(baseline_v, baseline_a, streamed_v, streamed_a)
-            assert mx.array_equal(baseline_v, streamed_v).item()
-            assert mx.array_equal(baseline_a, streamed_a).item()
+            # mx.compile fuses kernels, so the streamed output differs
+            # from the eager baseline by ~1 fp32 ULP.
+            assert mx.allclose(baseline_v, streamed_v, atol=1e-5, rtol=1e-5).item()
+            assert mx.allclose(baseline_a, streamed_a, atol=1e-5, rtol=1e-5).item()
             streamer.close()

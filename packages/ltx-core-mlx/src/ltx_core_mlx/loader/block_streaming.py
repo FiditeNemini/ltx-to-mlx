@@ -195,22 +195,34 @@ class StreamingLTXModel(nn.Module):
         # leading-underscore-name shadowing nn.Module would attempt
         # via __getattr__.
         self.inner = model
-        # Store the streamer + shared block in the instance __dict__
-        # directly so they don't show up in parameters().
+        shared = model.transformer_blocks[0]
+        # Pre-compile the shared block forward. Passing ``inputs=shared``
+        # tells mx.compile that the block's parameters can vary between
+        # calls, so streamer.bind() rebinds the weights without
+        # invalidating the compiled graph. Compiled kernels make each
+        # block forward fast enough that 48 sequential mx.eval syncs
+        # don't trip the macOS Metal "Impacting Interactivity" watchdog.
+        # Empirically this also halves peak Metal (~2.8 GB vs ~4.4 GB).
+        compiled = mx.compile(shared, inputs=shared)
+        # Store the streamer + shared block + compiled fn in the
+        # instance __dict__ directly so they don't show up in
+        # parameters().
         object.__setattr__(self, "_streamer", streamer)
-        object.__setattr__(self, "_shared_block", model.transformer_blocks[0])
+        object.__setattr__(self, "_shared_block", shared)
+        object.__setattr__(self, "_compiled_block", compiled)
 
     def __call__(self, *args, **kwargs):
         # Inject block_provider unless caller already passed one.
         if kwargs.get("block_provider") is None:
             streamer = object.__getattribute__(self, "_streamer")
             shared = object.__getattribute__(self, "_shared_block")
+            compiled = object.__getattribute__(self, "_compiled_block")
             prev_idx: list[int | None] = [None]
 
             def provider(idx: int) -> nn.Module:
                 streamer.bind(shared, idx, evict_previous=prev_idx[0])
                 prev_idx[0] = idx
-                return shared
+                return compiled
 
             kwargs["block_provider"] = provider
         return self.inner(*args, **kwargs)
