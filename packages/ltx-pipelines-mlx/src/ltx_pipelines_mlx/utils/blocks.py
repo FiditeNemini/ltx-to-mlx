@@ -15,7 +15,7 @@ video_dec = VideoDecoder(model_dir)
 video_dec.decode_and_stream(video_latent, "out.mp4", audio_path="audio.wav")
 ```
 
-The :class:`BasePipeline` inheritance tree (:class:`TwoStagePipeline`,
+The :class:`BasePipeline` inheritance tree (:class:`TI2VidTwoStagesPipeline`,
 :class:`RetakePipeline`, :class:`ICLoraPipeline`, ...) **delegates** to
 these blocks internally. Each pipeline holds private block instances
 (``self._prompt_encoder``, ``self._image_conditioner``,

@@ -1,6 +1,6 @@
 """Calibrate TeaCache polyfit coefficients for LTX-2 stage 1.
 
-Runs N reference generations through ``TwoStagePipeline.generate_two_stage``
+Runs N reference generations through ``TI2VidTwoStagesPipeline.generate_two_stage``
 with caching disabled, captures per-step (gate_signal, block_residual) for
 the conditioned pass, computes input/output L1 deltas in fp32, and fits a
 degree-4 polynomial mapping input delta → output delta. Writes the
@@ -27,8 +27,8 @@ from pathlib import Path
 import mlx.core as mx
 import numpy as np
 
-from ltx_pipelines_mlx.ti2vid_two_stages import TwoStagePipeline
-from ltx_pipelines_mlx.ti2vid_two_stages_hq import TwoStageHQPipeline
+from ltx_pipelines_mlx.ti2vid_two_stages import TI2VidTwoStagesPipeline
+from ltx_pipelines_mlx.ti2vid_two_stages_hq import TI2VidTwoStagesHQPipeline
 
 
 def _rel_l1_fp32(curr: mx.array, prev: mx.array) -> float:
@@ -89,7 +89,7 @@ def _parse_args() -> argparse.Namespace:
         "--hq",
         action="store_true",
         help=(
-            "Calibrate the HQ res_2s path (TwoStageHQPipeline) instead of the "
+            "Calibrate the HQ res_2s path (TI2VidTwoStagesHQPipeline) instead of the "
             "Euler path. res_2s has different per-step dynamics so its "
             "coefficients are not interchangeable with the Euler ones."
         ),
@@ -112,7 +112,7 @@ def main() -> int:
     pipeline_label = "HQ res_2s" if args.hq else "Euler"
     print(f"Calibrating TeaCache for LTX-2 stage 1 ({pipeline_label}): {len(prompts)} prompts x {args.num_steps} steps")
 
-    pipeline_class = TwoStageHQPipeline if args.hq else TwoStagePipeline
+    pipeline_class = TI2VidTwoStagesHQPipeline if args.hq else TI2VidTwoStagesPipeline
     pipeline = pipeline_class(model_dir=args.model_dir)
     calibrator = _StreamingCalibrator()
 

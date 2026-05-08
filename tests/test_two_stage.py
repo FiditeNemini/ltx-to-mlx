@@ -229,9 +229,9 @@ class TestTwoStagePipelineInstantiation:
         return str(d)
 
     def test_two_stage_init(self, tmp_path):
-        from ltx_pipelines_mlx.ti2vid_two_stages import TwoStagePipeline
+        from ltx_pipelines_mlx.ti2vid_two_stages import TI2VidTwoStagesPipeline
 
-        pipe = TwoStagePipeline(model_dir=self._make_tmpdir(tmp_path), low_memory=True)
+        pipe = TI2VidTwoStagesPipeline(model_dir=self._make_tmpdir(tmp_path), low_memory=True)
         assert pipe._dev_transformer == "transformer-dev.safetensors"
         assert pipe._distilled_lora == "ltx-2.3-22b-distilled-lora-384.safetensors"
         assert pipe._distilled_lora_strength == 1.0
@@ -239,21 +239,21 @@ class TestTwoStagePipelineInstantiation:
         assert pipe.vae_encoder is None
 
     def test_hq_inherits_from_two_stage(self):
-        from ltx_pipelines_mlx.ti2vid_two_stages import TwoStagePipeline
-        from ltx_pipelines_mlx.ti2vid_two_stages_hq import TwoStageHQPipeline
+        from ltx_pipelines_mlx.ti2vid_two_stages import TI2VidTwoStagesPipeline
+        from ltx_pipelines_mlx.ti2vid_two_stages_hq import TI2VidTwoStagesHQPipeline
 
-        assert issubclass(TwoStageHQPipeline, TwoStagePipeline)
+        assert issubclass(TI2VidTwoStagesHQPipeline, TI2VidTwoStagesPipeline)
 
     def test_hq_init(self, tmp_path):
-        from ltx_pipelines_mlx.ti2vid_two_stages_hq import TwoStageHQPipeline
+        from ltx_pipelines_mlx.ti2vid_two_stages_hq import TI2VidTwoStagesHQPipeline
 
-        pipe = TwoStageHQPipeline(model_dir=self._make_tmpdir(tmp_path), low_memory=True)
+        pipe = TI2VidTwoStagesHQPipeline(model_dir=self._make_tmpdir(tmp_path), low_memory=True)
         assert pipe._dev_transformer == "transformer-dev.safetensors"
 
     def test_custom_params(self, tmp_path):
-        from ltx_pipelines_mlx.ti2vid_two_stages import TwoStagePipeline
+        from ltx_pipelines_mlx.ti2vid_two_stages import TI2VidTwoStagesPipeline
 
-        pipe = TwoStagePipeline(
+        pipe = TI2VidTwoStagesPipeline(
             model_dir=self._make_tmpdir(tmp_path),
             dev_transformer="custom-dev.safetensors",
             distilled_lora="custom-lora.safetensors",
@@ -265,9 +265,9 @@ class TestTwoStagePipelineInstantiation:
 
     def test_keyframe_inherits_from_two_stage(self):
         from ltx_pipelines_mlx.keyframe_interpolation import KeyframeInterpolationPipeline
-        from ltx_pipelines_mlx.ti2vid_two_stages import TwoStagePipeline
+        from ltx_pipelines_mlx.ti2vid_two_stages import TI2VidTwoStagesPipeline
 
-        assert issubclass(KeyframeInterpolationPipeline, TwoStagePipeline)
+        assert issubclass(KeyframeInterpolationPipeline, TI2VidTwoStagesPipeline)
 
 
 # ---------------------------------------------------------------------------

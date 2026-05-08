@@ -115,9 +115,9 @@ mirrors an upstream Lightricks/LTX-2 pipeline.
 Two-stage (recommended for most use cases — dev model + CFG + upscale):
 
 ```python
-from ltx_pipelines_mlx import TwoStagePipeline
+from ltx_pipelines_mlx import TI2VidTwoStagesPipeline
 
-pipe = TwoStagePipeline(model_dir="dgrauet/ltx-2.3-mlx-q8")
+pipe = TI2VidTwoStagesPipeline(model_dir="dgrauet/ltx-2.3-mlx-q8")
 pipe.generate_and_save(
     prompt="A sunset over the ocean with waves crashing",
     output_path="sunset.mp4",
@@ -132,15 +132,15 @@ pipe.generate_and_save(
 For other modes:
 
 - `DistilledPipeline` — fastest (distilled half-res + upscale).
-- `TwoStageHQPipeline` — highest quality (res_2s + CFG + upscale).
+- `TI2VidTwoStagesHQPipeline` — highest quality (res_2s + CFG + upscale).
 - `TI2VidOneStagePipeline` — full-res CFG, no upscaler dependency.
 
 Audio-to-Video:
 
 ```python
-from ltx_pipelines_mlx import AudioToVideoPipeline
+from ltx_pipelines_mlx import A2VidPipelineTwoStage
 
-pipe = AudioToVideoPipeline(model_dir="dgrauet/ltx-2.3-mlx-q8")
+pipe = A2VidPipelineTwoStage(model_dir="dgrauet/ltx-2.3-mlx-q8")
 pipe.generate_and_save(
     prompt="A musician performing",
     output_path="a2v.mp4",

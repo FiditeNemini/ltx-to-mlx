@@ -15,8 +15,8 @@ artefacts.
 For the simpler distilled-at-target one-stage path, see
 :class:`BasePipeline`.
 
-For dev model + CFG quality, see :class:`TwoStagePipeline` /
-:class:`TwoStageHQPipeline`.
+For dev model + CFG quality, see :class:`TI2VidTwoStagesPipeline` /
+:class:`TI2VidTwoStagesHQPipeline`.
 """
 
 from __future__ import annotations
@@ -35,17 +35,17 @@ from ltx_core_mlx.utils.positions import (
 )
 
 from .scheduler import DISTILLED_SIGMAS, STAGE_2_SIGMAS
-from .ti2vid_two_stages import TwoStagePipeline
+from .ti2vid_two_stages import TI2VidTwoStagesPipeline
 from .utils.helpers import create_noised_state
 from .utils.samplers import denoise_loop
 
 _materialize = getattr(mx, "eval")  # noqa: B009 -- security hook flags mx.eval pattern
 
 
-class DistilledPipeline(TwoStagePipeline):
+class DistilledPipeline(TI2VidTwoStagesPipeline):
     """Distilled two-stage T2V/I2V pipeline (half-res → upscale → full-res refine).
 
-    Reuses :class:`TwoStagePipeline`'s upsampler loading and helpers but
+    Reuses :class:`TI2VidTwoStagesPipeline`'s upsampler loading and helpers but
     overrides ``generate_two_stage`` to:
 
     - Skip negative-prompt encoding (no CFG).
@@ -125,7 +125,7 @@ class DistilledPipeline(TwoStagePipeline):
             stage2_steps: Stage 2 steps (default: full STAGE_2_SIGMAS = 3).
             image: Optional reference image for I2V conditioning.
             **_unused_kwargs: Accepted (and ignored) for signature compatibility
-                with :meth:`TwoStagePipeline.generate_two_stage`. CFG / STG /
+                with :meth:`TI2VidTwoStagesPipeline.generate_two_stage`. CFG / STG /
                 TeaCache flags don't apply to the distilled flow.
 
         Returns:
@@ -215,7 +215,7 @@ class DistilledPipeline(TwoStagePipeline):
         if self.low_memory:
             aggressive_cleanup()
 
-        # --- Upscale (same denorm/upsample/renorm as TwoStagePipeline) ---
+        # --- Upscale (same denorm/upsample/renorm as TI2VidTwoStagesPipeline) ---
         video_half = self.video_patchifier.unpatchify(output_1.video_latent, (F, H_half, W_half))
         video_mlx = video_half.transpose(0, 2, 3, 4, 1)
         video_denorm = self.vae_encoder.denormalize_latent(video_mlx)

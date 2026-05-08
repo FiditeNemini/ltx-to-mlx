@@ -31,18 +31,18 @@ from ltx_core_mlx.utils.image import prepare_image_for_encoding
 from ltx_core_mlx.utils.memory import aggressive_cleanup
 from ltx_core_mlx.utils.positions import compute_audio_positions, compute_audio_token_count, compute_video_positions
 from ltx_pipelines_mlx.scheduler import STAGE_2_SIGMAS, ltx2_schedule
-from ltx_pipelines_mlx.ti2vid_two_stages import DEFAULT_CFG_SCALE, TwoStagePipeline
+from ltx_pipelines_mlx.ti2vid_two_stages import DEFAULT_CFG_SCALE, TI2VidTwoStagesPipeline
 from ltx_pipelines_mlx.utils.helpers import create_noised_state
 from ltx_pipelines_mlx.utils.samplers import denoise_loop, guided_denoise_loop
 
 
-class AudioToVideoPipeline(TwoStagePipeline):
+class A2VidPipelineTwoStage(TI2VidTwoStagesPipeline):
     """Audio-to-Video two-stage generation pipeline.
 
     Stage 1: Dev model + CFG at half spatial resolution, audio frozen.
     Stage 2: Dev + distilled LoRA fused, refine video + audio at full resolution.
 
-    Inherits from TwoStagePipeline for dev model loading, LoRA fusion,
+    Inherits from TI2VidTwoStagesPipeline for dev model loading, LoRA fusion,
     upsampler, VAE encoder, and decoder management.
 
     Args:
@@ -137,7 +137,7 @@ class AudioToVideoPipeline(TwoStagePipeline):
             Path to the output video file.
         """
         if audio_path is None:
-            raise ValueError("audio_path is required for AudioToVideoPipeline")
+            raise ValueError("audio_path is required for A2VidPipelineTwoStage")
 
         if audio_max_duration is None:
             audio_max_duration = num_frames / fps

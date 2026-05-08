@@ -98,7 +98,7 @@ def _remap_lora_keys(lora_sd: dict[str, mx.array]) -> dict[str, mx.array]:
     return remapped
 
 
-class TwoStagePipeline(BasePipeline):
+class TI2VidTwoStagesPipeline(BasePipeline):
     """Two-stage generation: dev model + CFG at half-res, upscale, distilled LoRA refine.
 
     Stage 1: Dev model + CFG guidance at half resolution (Euler sampler).

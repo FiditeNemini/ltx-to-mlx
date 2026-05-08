@@ -487,11 +487,11 @@ def _cmd_generate(args: argparse.Namespace) -> None:
 
     elif args.two_stages_hq or args.two_stage:
         if args.two_stages_hq:
-            from ltx_pipelines_mlx.ti2vid_two_stages_hq import TwoStageHQPipeline as PipeClass
+            from ltx_pipelines_mlx.ti2vid_two_stages_hq import TI2VidTwoStagesHQPipeline as PipeClass
 
             mode_name = "HQ Two-Stage (res_2s + CFG + distilled LoRA)"
         else:
-            from ltx_pipelines_mlx.ti2vid_two_stages import TwoStagePipeline as PipeClass
+            from ltx_pipelines_mlx.ti2vid_two_stages import TI2VidTwoStagesPipeline as PipeClass
 
             mode_name = "Two-Stage (Euler + CFG + distilled LoRA)"
 
@@ -557,7 +557,7 @@ def _cmd_a2v(args: argparse.Namespace) -> None:
     """Generate video from audio + text prompt."""
     t0 = time.time()
 
-    from ltx_pipelines_mlx.a2vid_two_stage import AudioToVideoPipeline as PipeClass
+    from ltx_pipelines_mlx.a2vid_two_stage import A2VidPipelineTwoStage as PipeClass
 
     if not args.quiet:
         print("Mode: Audio-to-Video (Euler + CFG)")

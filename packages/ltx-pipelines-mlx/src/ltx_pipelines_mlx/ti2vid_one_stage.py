@@ -8,7 +8,7 @@ refine).
 Use this pipeline when you want the quality of the dev model with CFG
 but don't want to rely on the spatial upsampler — for example when
 running at native distilled-training resolutions (≤ 480x704) where the
-upscale path of :class:`TwoStagePipeline` adds latency without quality
+upscale path of :class:`TI2VidTwoStagesPipeline` adds latency without quality
 benefit, or when you need direct full-res latents (e.g. for downstream
 post-processing).
 
@@ -44,17 +44,17 @@ from ltx_core_mlx.utils.positions import (
 )
 
 from .scheduler import ltx2_schedule
-from .ti2vid_two_stages import DEFAULT_CFG_SCALE, TwoStagePipeline
+from .ti2vid_two_stages import DEFAULT_CFG_SCALE, TI2VidTwoStagesPipeline
 from .utils.helpers import create_noised_state
 from .utils.samplers import guided_denoise_loop
 
 _materialize = getattr(mx, "eval")  # noqa: B009 -- security hook flags mx.eval pattern
 
 
-class TI2VidOneStagePipeline(TwoStagePipeline):
+class TI2VidOneStagePipeline(TI2VidTwoStagesPipeline):
     """Dev model + CFG one-stage T2V/I2V at full target resolution.
 
-    Reuses :class:`TwoStagePipeline` for text encoding, dev transformer
+    Reuses :class:`TI2VidTwoStagesPipeline` for text encoding, dev transformer
     loading, and VAE encoder loading — but skips the upsampler and
     stage 2 refine. The forward runs once at the user-requested
     resolution.
@@ -95,7 +95,7 @@ class TI2VidOneStagePipeline(TwoStagePipeline):
             self.dit = self._load_dev_transformer()
 
         # VAE encoder is needed only for I2V (image conditioning).
-        # We still load it eagerly here for symmetry with TwoStagePipeline.
+        # We still load it eagerly here for symmetry with TI2VidTwoStagesPipeline.
         self._load_vae_encoder()
 
         self._loaded = True

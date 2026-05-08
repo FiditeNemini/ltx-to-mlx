@@ -27,7 +27,7 @@ from ltx_core_mlx.utils.image import prepare_image_for_encoding
 from ltx_core_mlx.utils.memory import aggressive_cleanup
 from ltx_core_mlx.utils.positions import compute_audio_positions, compute_audio_token_count, compute_video_positions
 from ltx_pipelines_mlx.scheduler import DISTILLED_SIGMAS, STAGE_2_SIGMAS, ltx2_schedule
-from ltx_pipelines_mlx.ti2vid_two_stages import TwoStagePipeline
+from ltx_pipelines_mlx.ti2vid_two_stages import TI2VidTwoStagesPipeline
 from ltx_pipelines_mlx.utils.helpers import create_noised_state
 from ltx_pipelines_mlx.utils.samplers import denoise_loop, guided_denoise_loop
 
@@ -58,7 +58,7 @@ def _encode_keyframe(
     return tokens
 
 
-class KeyframeInterpolationPipeline(TwoStagePipeline):
+class KeyframeInterpolationPipeline(TI2VidTwoStagesPipeline):
     """Two-stage keyframe interpolation pipeline.
 
     Stage 1: Generate at half resolution with keyframe conditioning + optional CFG.

@@ -1,6 +1,6 @@
 """HQ two-stage pipeline — res_2s second-order sampler for Stage 1.
 
-Same architecture as TwoStagePipeline but uses the res_2s second-order sampler
+Same architecture as TI2VidTwoStagesPipeline but uses the res_2s second-order sampler
 instead of Euler for Stage 1 denoising, producing higher quality at fewer steps.
 Supports guidance (CFG/STG) with the res_2s sampler.
 
@@ -25,7 +25,7 @@ from ltx_core_mlx.utils.image import prepare_image_for_encoding
 from ltx_core_mlx.utils.memory import aggressive_cleanup
 from ltx_core_mlx.utils.positions import compute_audio_positions, compute_audio_token_count, compute_video_positions
 from ltx_pipelines_mlx.scheduler import STAGE_2_SIGMAS, ltx2_schedule
-from ltx_pipelines_mlx.ti2vid_two_stages import DEFAULT_CFG_SCALE, TwoStagePipeline
+from ltx_pipelines_mlx.ti2vid_two_stages import DEFAULT_CFG_SCALE, TI2VidTwoStagesPipeline
 from ltx_pipelines_mlx.utils.helpers import create_noised_state
 from ltx_pipelines_mlx.utils.samplers import denoise_loop, res2s_denoise_loop
 
@@ -70,10 +70,10 @@ def _build_hq_teacache_controller(num_steps: int, thresh: float | None) -> TeaCa
     )
 
 
-class TwoStageHQPipeline(TwoStagePipeline):
+class TI2VidTwoStagesHQPipeline(TI2VidTwoStagesPipeline):
     """HQ two-stage generation with res_2s second-order sampler.
 
-    Inherits from TwoStagePipeline and overrides Stage 1 to use the res_2s
+    Inherits from TI2VidTwoStagesPipeline and overrides Stage 1 to use the res_2s
     sampler for higher quality at fewer steps. Stage 2 is identical.
 
     Args:
@@ -105,7 +105,7 @@ class TwoStageHQPipeline(TwoStagePipeline):
     ) -> tuple[mx.array, mx.array]:
         """Generate video using HQ two-stage pipeline with res_2s sampler.
 
-        Same as TwoStagePipeline.generate_two_stage but uses res_2s sampler
+        Same as TI2VidTwoStagesPipeline.generate_two_stage but uses res_2s sampler
         for Stage 1 instead of Euler. ``enable_teacache`` / ``teacache_thresh``
         / ``tap`` are forwarded to ``res2s_denoise_loop`` exactly as in the
         Euler path.

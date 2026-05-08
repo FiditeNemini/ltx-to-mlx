@@ -534,7 +534,7 @@ Two-stage pipeline requiring the dev (non-distilled) model + CFG. The distilled 
 4. Denoise with distilled schedule (3 steps)
 
 ### Key Files
-- `keyframe_interpolation.py` — `KeyframeInterpolationPipeline` (extends `TwoStagePipeline`)
+- `keyframe_interpolation.py` — `KeyframeInterpolationPipeline` (extends `TI2VidTwoStagesPipeline`)
 - `conditioning/types/keyframe_cond.py` — `VideoConditionByKeyframeIndex` (appends tokens, builds attention mask)
 - `model/upsampler/model.py` — `LatentUpsampler` (Conv3d + PixelShuffle2D)
 
@@ -567,14 +567,14 @@ Two-stage pipeline for higher-resolution generation. Requires the dev model + di
 - **Memory budget (32GB Mac)**: 33 frames at 480x704 with CFG-only (2 forward passes per step). STG adds a 3rd pass and may not fit.
 
 ### Key Files
-- `ti2vid_two_stages.py` — `TwoStagePipeline` (Euler + CFG, extends `BasePipeline`)
-- `ti2vid_two_stages_hq.py` — `TwoStageHQPipeline` (res_2s + CFG, extends `TwoStagePipeline`)
+- `ti2vid_two_stages.py` — `TI2VidTwoStagesPipeline` (Euler + CFG, extends `BasePipeline`)
+- `ti2vid_two_stages_hq.py` — `TI2VidTwoStagesHQPipeline` (res_2s + CFG, extends `TI2VidTwoStagesPipeline`)
 - `utils/samplers.py` — `res2s_denoise_loop` (with guidance support), `guided_denoise_loop`
 - `scheduler.py` — `ltx2_schedule`, `STAGE_2_SIGMAS`
 
 ### TeaCache (opt-in stage 1 acceleration)
 
-Timestep-aware residual caching (Liu et al., *Timestep Embedding Aware Cache*) for `TwoStagePipeline.generate_two_stage`. Engine lives in `mlx-arsenal>=0.2.4` (`TeaCacheController`); LTX-2-specific calibrated coefficients + threshold live in `ti2vid_two_stages.py` (`LTX2_TEACACHE_COEFFICIENTS`, `LTX2_TEACACHE_THRESH`).
+Timestep-aware residual caching (Liu et al., *Timestep Embedding Aware Cache*) for `TI2VidTwoStagesPipeline.generate_two_stage`. Engine lives in `mlx-arsenal>=0.2.4` (`TeaCacheController`); LTX-2-specific calibrated coefficients + threshold live in `ti2vid_two_stages.py` (`LTX2_TEACACHE_COEFFICIENTS`, `LTX2_TEACACHE_THRESH`).
 
 ```python
 pipeline.generate_and_save(
@@ -783,7 +783,7 @@ Upstream uses ``(B, num_axes, T, 2)`` interval positions per token; we use ``(B,
 
 Total tiles = ``N * M * M``. Default ``1*1*1`` = no tiling.
 
-Coverage: ``generate`` (one-stage / ``--two-stage`` / ``--two-stages-hq``), ``a2v``, ``keyframe`` via ``TwoStagePipeline.tile_count`` (inherited). ``ic-lora`` could be wired on the same model with the same primitive but isn't yet.
+Coverage: ``generate`` (one-stage / ``--two-stage`` / ``--two-stages-hq``), ``a2v``, ``keyframe`` via ``TI2VidTwoStagesPipeline.tile_count`` (inherited). ``ic-lora`` could be wired on the same model with the same primitive but isn't yet.
 
 ### Tradeoff
 
