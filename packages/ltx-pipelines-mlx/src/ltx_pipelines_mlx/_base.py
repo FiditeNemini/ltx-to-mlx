@@ -8,7 +8,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import mlx.core as mx
-from huggingface_hub import snapshot_download
 from PIL import Image
 
 from ltx_core_mlx.components.patchifiers import AudioPatchifier, VideoLatentPatchifier, compute_video_latent_shape
@@ -172,43 +171,20 @@ class BasePipeline:
 
     @staticmethod
     def _resolve_model_dir(model_dir: str) -> Path:
-        """Resolve model directory — download from HF if needed."""
-        path = Path(model_dir)
-        if path.exists():
-            return path
-        # Try HuggingFace download
-        return Path(snapshot_download(model_dir))
+        """Inheritance wrapper around :func:`utils._orchestration.resolve_model_dir`."""
+        from ltx_pipelines_mlx.utils._orchestration import resolve_model_dir as _impl
+
+        return _impl(model_dir)
 
     @staticmethod
     def _fuse_pending_loras(
         transformer_weights: dict[str, mx.array],
         lora_paths: list[tuple[str, float]],
     ) -> dict[str, mx.array]:
-        """Fuse LoRA deltas into transformer weights before model loading.
+        """Inheritance wrapper around :func:`utils._orchestration.fuse_pending_loras`."""
+        from ltx_pipelines_mlx.utils._orchestration import fuse_pending_loras as _impl
 
-        Args:
-            transformer_weights: Raw transformer state dict.
-            lora_paths: List of (path, strength) tuples.
-
-        Returns:
-            Modified state dict with LoRA deltas fused.
-        """
-        from ltx_core_mlx.loader.fuse_loras import apply_loras
-        from ltx_core_mlx.loader.primitives import LoraStateDictWithStrength, StateDict
-        from ltx_core_mlx.loader.sd_ops import LTXV_LORA_COMFY_RENAMING_MAP
-        from ltx_core_mlx.loader.sft_loader import SafetensorsStateDictLoader
-
-        model_sd = StateDict(sd=transformer_weights, size=0, dtype=set())
-        loader = SafetensorsStateDictLoader()
-
-        lora_sds = []
-        for lora_path, strength in lora_paths:
-            lora_sd = loader.load(lora_path, sd_ops=LTXV_LORA_COMFY_RENAMING_MAP)
-            lora_sds.append(LoraStateDictWithStrength(state_dict=lora_sd, strength=strength))
-            print(f"  Fusing LoRA: {lora_path} (strength={strength:.2f})")
-
-        fused_sd = apply_loras(model_sd=model_sd, lora_sd_and_strengths=lora_sds)
-        return fused_sd.sd
+        return _impl(transformer_weights, lora_paths)
 
     # ------------------------------------------------------------------
     # Shared component loading methods (used by subclass pipelines)
@@ -252,46 +228,17 @@ class BasePipeline:
         self.audio_decoder_block.load()
 
     def _load_dev_transformer(self) -> LTXModel:
-        """Load the dev (non-distilled) transformer weights.
+        """Inheritance wrapper around :func:`utils._orchestration.load_dev_transformer`."""
+        from ltx_pipelines_mlx.utils._orchestration import load_dev_transformer as _impl
 
-        Requires ``self._dev_transformer`` to be set by the subclass.
-        Honors ``self.low_ram_streaming`` to stream blocks instead of
-        materializing all 48.
-        """
         assert self._dev_transformer is not None, "_dev_transformer must be set before calling _load_dev_transformer()"
-        dev_path = self.model_dir / self._dev_transformer
-        if not dev_path.exists():
-            raise FileNotFoundError(
-                f"Dev transformer not found: {dev_path}\n"
-                "This pipeline requires the dev model for CFG guidance.\n"
-                "Use: --model dgrauet/ltx-2.3-mlx-q8"
-            )
-        return self._load_transformer_with_optional_streaming(dev_path)
+        return _impl(self.model_dir, self._dev_transformer, low_ram_streaming=self.low_ram_streaming)
 
-    def _load_transformer_with_optional_streaming(self, transformer_path) -> LTXModel:
-        """Build an LTXModel from the given safetensors, with optional block streaming.
+    def _load_transformer_with_optional_streaming(self, transformer_path: Path) -> LTXModel:
+        """Inheritance wrapper around :func:`utils._orchestration.load_transformer`."""
+        from ltx_pipelines_mlx.utils._orchestration import load_transformer as _impl
 
-        When ``self.low_ram_streaming`` is True, drops blocks 1..47 before
-        quantization (so apply_quantization only materializes block 0),
-        loads non-block weights via load_weights, and wraps the model in
-        StreamingLTXModel for per-forward block streaming.
-        """
-        dit = LTXModel()
-        weights = load_split_safetensors(transformer_path, prefix="transformer.")
-        if self.low_ram_streaming:
-            from ltx_core_mlx.loader.block_streaming import BlockStreamer, StreamingLTXModel
-
-            dit.transformer_blocks = [dit.transformer_blocks[0]]
-            apply_quantization(dit, weights)
-            non_block = [(k, v) for k, v in weights.items() if not k.startswith("transformer_blocks.")]
-            dit.load_weights(non_block, strict=False)
-            streamer = BlockStreamer(transformer_path, block_prefix="transformer.transformer_blocks.")
-            dit = StreamingLTXModel(dit, streamer)
-        else:
-            apply_quantization(dit, weights)
-            dit.load_weights(list(weights.items()))
-        aggressive_cleanup()
-        return dit
+        return _impl(transformer_path, low_ram_streaming=self.low_ram_streaming)
 
     def _decode_and_save_video(
         self,
@@ -300,43 +247,18 @@ class BasePipeline:
         output_path: str,
         fps: float = 24.0,
     ) -> str:
-        """Decode audio + video latents and save to file.
+        """Inheritance wrapper around :func:`utils._orchestration.decode_and_save_video`."""
+        from ltx_pipelines_mlx.utils._orchestration import decode_and_save_video as _impl
 
-        Decodes audio first (smaller), saves to temp WAV, then streams
-        video decode to ffmpeg with audio muxing.
-
-        Args:
-            video_latent: Video latent tensor.
-            audio_latent: Audio latent tensor.
-            output_path: Path to output video file.
-            fps: Frame rate.
-
-        Returns:
-            Path to the output video file.
-        """
-        import tempfile
-
-        # Decode audio first (smaller)
-        assert self.audio_decoder is not None
-        assert self.vocoder is not None
-        mel = self.audio_decoder.decode(audio_latent)
-        waveform = self.vocoder(mel)
-        if self.low_memory:
-            aggressive_cleanup()
-
-        # Save audio to temp file
-        audio_path = tempfile.mktemp(suffix=".wav")
-        self._save_waveform(waveform, audio_path, sample_rate=48000)
-
-        # Decode video and stream to ffmpeg
-        assert self.vae_decoder is not None
-        self.vae_decoder.decode_and_stream(video_latent, output_path, fps=fps, audio_path=audio_path)
-
-        # Cleanup temp audio
-        Path(audio_path).unlink(missing_ok=True)
-        aggressive_cleanup()
-
-        return output_path
+        return _impl(
+            self.video_decoder_block,
+            self.audio_decoder_block,
+            video_latent,
+            audio_latent,
+            output_path,
+            fps=fps,
+            low_memory=self.low_memory,
+        )
 
     # ------------------------------------------------------------------
     # Original one-stage pipeline methods
@@ -551,35 +473,10 @@ class BasePipeline:
 
     @staticmethod
     def _save_waveform(waveform: mx.array, path: str, sample_rate: int = 48000) -> None:
-        """Save waveform to WAV file.
+        """Inheritance wrapper around :func:`utils._orchestration.save_waveform`."""
+        from ltx_pipelines_mlx.utils._orchestration import save_waveform as _impl
 
-        Args:
-            waveform: (B, C, T) or (B, T) waveform.
-            path: Output path.
-            sample_rate: Sample rate in Hz.
-        """
-        import wave
-
-        import numpy as np
-
-        # Take first batch item
-        wav = waveform[0]
-        if wav.ndim == 2:
-            num_channels = wav.shape[0]
-            wav = wav.T  # (T, C)
-        else:
-            num_channels = 1
-            wav = wav[:, None]  # (T, 1)
-
-        wav_np = np.array(wav.astype(mx.float32), dtype=np.float32)
-        wav_np = np.clip(wav_np, -1.0, 1.0)
-        wav_int16 = (wav_np * 32767).astype(np.int16)
-
-        with wave.open(path, "w") as wf:
-            wf.setnchannels(num_channels)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            wf.writeframes(wav_int16.tobytes())
+        _impl(waveform, path, sample_rate=sample_rate)
 
 
 class ImageToVideoPipeline(BasePipeline):
