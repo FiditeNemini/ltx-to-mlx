@@ -210,12 +210,11 @@ examples:
     a2v.add_argument("--audio", "-a", required=True, help="Input audio file (WAV/MP3/etc.)")
     a2v.add_argument("--fps", type=float, default=24.0, help="Frame rate (default: 24)")
     a2v.add_argument("--audio-start", type=float, default=0.0, help="Audio start time in seconds (default: 0)")
-    a2v.add_argument("--stage1-steps", type=int, default=None, help="Stage 1 steps (default: 30 standard, 15 HQ)")
+    a2v.add_argument("--stage1-steps", type=int, default=None, help="Stage 1 steps (default: 30)")
     a2v.add_argument("--stage2-steps", type=int, default=None, help="Stage 2 steps (default: 3)")
     a2v.add_argument("--cfg-scale", type=float, default=None, help="CFG guidance scale (default: 3.0)")
-    a2v.add_argument("--stg-scale", type=float, default=None, help="STG guidance scale (default: 1.0 standard, 0.0 HQ)")
+    a2v.add_argument("--stg-scale", type=float, default=None, help="STG guidance scale (default: 0.0)")
     a2v.add_argument("--image", "-i", default=None, help="Reference image for I2V conditioning (optional)")
-    a2v.add_argument("--hq", action="store_true", help="HQ mode: use res_2s sampler for stage 1")
 
     # --- retake ---
     ret = sub.add_parser("retake", help="Regenerate a time segment of an existing video")
@@ -553,17 +552,10 @@ def _cmd_a2v(args: argparse.Namespace) -> None:
     """Generate video from audio + text prompt."""
     t0 = time.time()
 
-    if args.hq:
-        from ltx_pipelines_mlx.a2vid_two_stage_hq import AudioToVideoHQPipeline as PipeClass
-
-        mode_name = "Audio-to-Video HQ (res_2s + CFG)"
-    else:
-        from ltx_pipelines_mlx.a2vid_two_stage import AudioToVideoPipeline as PipeClass
-
-        mode_name = "Audio-to-Video (Euler + CFG)"
+    from ltx_pipelines_mlx.a2vid_two_stage import AudioToVideoPipeline as PipeClass
 
     if not args.quiet:
-        print(f"Mode: {mode_name}")
+        print("Mode: Audio-to-Video (Euler + CFG)")
         print(f"Audio: {args.audio}")
         print(f"  Model: {args.model}")
 

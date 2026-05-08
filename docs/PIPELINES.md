@@ -2,7 +2,7 @@
 
 Reference for all CLI subcommands of `ltx-2-mlx`, the pipeline class
 backing each, and which memory / performance flags apply where.
-Current as of **v0.8.0**.
+Current as of **v0.8.1**.
 
 For the underlying architecture and conventions, see
 [CLAUDE.md](../CLAUDE.md). For the high-level user-facing overview,
@@ -16,8 +16,7 @@ see [README.md](../README.md).
 | `generate --two-stage` | `TwoStagePipeline` | T2V / I2V | Euler + CFG (30 steps) | Euler distilled (3 steps) | q8 + dev LoRA | ✅ | 0.0 |
 | `generate --hq` | `TwoStageHQPipeline` | T2V / I2V | res_2s + CFG (15 steps × 2 sub-steps) | Euler distilled (3) | q8 + dev LoRA | ✅ | 0.0 |
 | `generate --distilled` | `DistilledPipeline` | T2V / I2V | Euler distilled (8 steps) at half-res | Euler distilled (3) at full-res | q8 (distilled only) | ❌ | — |
-| `a2v` | A2V two-stage | A2V (+ optional I2V) | Euler + CFG (30) | Euler distilled (3) | q8 + dev LoRA | ✅ (audio cfg=7) | 0.0 |
-| `a2v --hq` | A2V HQ (res_2s) | A2V (+ optional I2V) | res_2s + CFG (15) | Euler distilled (3) | q8 + dev LoRA | ✅ | 0.0 |
+| `a2v` | `AudioToVideoPipeline` | A2V (+ optional I2V) | Euler + CFG (30) | Euler distilled (3) | q8 + dev LoRA | ✅ (audio cfg=7) | 0.0 |
 | `keyframe` | `KeyframeInterpolationPipeline` | start frame ↔ end frame | Euler + CFG (30) | Euler distilled (3) | q8 + dev LoRA | ✅ | 0.0 |
 | `ic-lora` | `ICLoraPipeline` | V2V (control video) + optional I2V | Euler distilled (8) | Euler distilled (3) | q8 + control LoRA | ❌ | — |
 | `hdr-ic-lora` | `HDRICLoraPipeline(ICLoraPipeline)` | V2V / pure T2V / +I2V → linear HDR | Euler distilled (8) | Euler distilled (3) | q8 + HDR LoRA | ❌ | — |
@@ -47,7 +46,7 @@ see [README.md](../README.md).
 | `generate --two-stage` | `--stage1-steps` (30), `--stage2-steps` (3), `--cfg-scale` (3.0), `--stg-scale` (0.0), `--image`, `--distilled-lora-strength` (1.0), `--enable-teacache`, `--teacache-thresh` |
 | `generate --hq` | same as two-stage but stage1 default 15 steps, res_2s sampler |
 | `generate --distilled` | `--stage1-steps` (8 default), `--stage2-steps` (3 default), `--image`. No CFG/STG/TeaCache flags (distilled flow). Same DiT in both stages — no LoRA swap. |
-| `a2v` | `--audio` (required), `--image`, `--audio-start`, `--fps`, `--hq`, all two-stage flags |
+| `a2v` | `--audio` (required), `--image`, `--audio-start`, `--fps`, all two-stage flags |
 | `keyframe` | `--start` / `--end` (image paths, required), `--fps`, all two-stage flags |
 | `ic-lora` | `--lora PATH STRENGTH` (required, repeatable), `--video-conditioning PATH STRENGTH` (required, repeatable), `--conditioning-strength` (1.0), `--image`, `--skip-stage-2`, `--stage1-steps`, `--stage2-steps` |
 | `hdr-ic-lora` | same as `ic-lora`, but `--video-conditioning` is **optional** (omit for pure T2V HDR). Auto-detects HDR transform from LoRA metadata. Outputs `.mp4` SDR + `.hdr.npz` linear HDR fp32 |
