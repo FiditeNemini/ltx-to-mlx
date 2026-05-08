@@ -396,14 +396,13 @@ class TextToVideoPipeline:
         # quality vs the LTX training distribution (1024 default).
         import os as _os
 
+        from ltx_core_mlx.utils.metal_watchdog import flush as _watchdog_flush
+
         _max_length = int(_os.environ.get("LTX2_GEMMA_MAX_LENGTH", "1024"))
         all_hidden_states, attention_mask = self.text_encoder.encode_all_layers(prompt, max_length=_max_length)
-        # Materialize Gemma outputs and flush before the connector forward.
-        # Splits the Metal command buffer so Gemma + connector don't pile
-        # into a single dispatch that exceeds the macOS watchdog under
-        # post-boot indexer contention.
-        mx.eval(all_hidden_states[-1])
-        mx.synchronize()
+        # Optional flush between Gemma output and connector — no-op unless
+        # LTX2_METAL_WATCHDOG_GUARD=1.
+        _watchdog_flush(all_hidden_states[-1])
         video_embeds, audio_embeds = self.feature_extractor(all_hidden_states, attention_mask=attention_mask)
         return video_embeds, audio_embeds
 

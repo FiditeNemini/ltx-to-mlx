@@ -153,11 +153,12 @@ class GemmaLanguageModel(nn.Module):
             all_hidden_states.append(h)
             if (i + 1) % eval_every == 0:
                 mx.eval(h)
-                # Force GPU completion between layers so the Metal command
-                # buffer flushes; otherwise the 48-layer forward can land in
-                # a single dispatch and exceed the macOS watchdog under
-                # post-boot indexer contention.
-                mx.synchronize()
+                # Optional GPU sync between layers when the macOS Metal
+                # watchdog guard is enabled (LTX2_METAL_WATCHDOG_GUARD=1).
+                # No-op otherwise — keeps full pipelining on capable hosts.
+                from ltx_core_mlx.utils.metal_watchdog import flush as _watchdog_flush
+
+                _watchdog_flush()
 
         return all_hidden_states
 
