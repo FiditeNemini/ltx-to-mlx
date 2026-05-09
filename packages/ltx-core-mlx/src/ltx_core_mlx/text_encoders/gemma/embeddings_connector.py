@@ -324,15 +324,22 @@ class Embeddings1DConnector(nn.Module):
         # No attention mask for self-attention (all positions valid after register replacement)
         attn_mask = None
 
-        # Run transformer blocks. With LTX2_METAL_WATCHDOG_GUARD=1 we
-        # materialize + sync per block to keep each block's Metal command
-        # buffer under the macOS watchdog (8 blocks at seq_len 1024 can
-        # otherwise cluster into a single dispatch over 10 s under
-        # post-boot indexer contention). Default is off — full pipelining.
+        # Run transformer blocks. On <=48 GB Macs we materialize per
+        # block to keep each block's Metal command buffer below the
+        # macOS GPU watchdog: 8 blocks of MHA + GEGLU FF at seq_len 640
+        # otherwise concatenate into a single dispatch that exceeds the
+        # 10 s threshold under sustained system contention (Spotlight,
+        # Siri, mds_stores, knowledgeconstructiond). No-op on >48 GB.
+        # LTX2_METAL_WATCHDOG_GUARD=1 layers an mx.synchronize on top.
         from ltx_core_mlx.utils.metal_watchdog import flush as _watchdog_flush
+
+        _split_per_block = mx.device_info()["memory_size"] <= 48 * 1024**3
+        _mx_eval = getattr(mx, "eval")  # noqa: B009 -- security hook flags mx.eval pattern
 
         for block in self.transformer_1d_blocks:
             hidden_states = block(hidden_states, rope_freqs=rope_freqs, attention_mask=attn_mask)
+            if _split_per_block:
+                _mx_eval(hidden_states)
             _watchdog_flush(hidden_states)
 
         # Optional output normalization (affine-free)
