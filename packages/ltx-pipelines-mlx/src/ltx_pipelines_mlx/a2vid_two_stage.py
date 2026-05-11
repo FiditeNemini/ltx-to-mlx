@@ -365,7 +365,8 @@ class A2VidPipelineTwoStage(TI2VidTwoStagesPipeline):
             # Trim to exact sample count for video duration
             max_samples = int(video_duration * 48000)
             waveform_48k = audio_data_48k.waveform[:, :, :max_samples]
-            temp_audio = tempfile.mktemp(suffix=".wav")
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as _tmp:
+                temp_audio = _tmp.name
             self._save_waveform(waveform_48k, temp_audio, sample_rate=48000)
         else:
             temp_audio = None

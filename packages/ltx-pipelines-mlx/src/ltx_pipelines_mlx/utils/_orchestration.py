@@ -155,7 +155,8 @@ def decode_and_save_video(
     if low_memory:
         aggressive_cleanup()
 
-    audio_path = tempfile.mktemp(suffix=".wav")
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as _tmp:
+        audio_path = _tmp.name
     save_waveform(waveform, audio_path, sample_rate=48000)
 
     video_decoder.decode_and_stream(video_latent, output_path, fps=fps, audio_path=audio_path)
