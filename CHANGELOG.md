@@ -10,6 +10,14 @@ version: breaking changes bump `y`, additive changes bump `z`. See
 [`docs/PIPELINE_MATURITY.md`](docs/PIPELINE_MATURITY.md) for per-pipeline
 stability guarantees.
 
+## [0.14.15](https://github.com/dgrauet/ltx-2-mlx/compare/v0.14.14...v0.14.15) (2026-07-01)
+
+
+### Bug Fixes
+
+* add missing frame_rate to combined_image_conditionings, fixing a2v/lipdub with image conditioning ([#56](https://github.com/dgrauet/ltx-2-mlx/issues/56)) ([cc0cacc](https://github.com/dgrauet/ltx-2-mlx/commit/cc0caccc4287855c56ba56628b5346b55f192c37))
+* do not truncate muxed video to shortest stream in VAE decode ([#58](https://github.com/dgrauet/ltx-2-mlx/issues/58)) ([d9f566a](https://github.com/dgrauet/ltx-2-mlx/commit/d9f566a641294a8562e9776ba343263771c26f70))
+
 ## [0.14.14](https://github.com/dgrauet/ltx-2-mlx/compare/v0.14.13...v0.14.14) (2026-06-29)
 
 
