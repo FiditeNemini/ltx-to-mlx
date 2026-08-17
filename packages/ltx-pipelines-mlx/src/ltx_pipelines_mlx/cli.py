@@ -22,6 +22,8 @@ import argparse
 import sys
 import time
 
+from ltx_pipelines_mlx.utils.stepwise import DEFAULT_PREVIEW_FRAMES
+
 DEFAULT_MODEL = "dgrauet/ltx-2.3-mlx-q8"
 DEFAULT_GEMMA = "mlx-community/gemma-3-12b-it-4bit"
 
@@ -38,6 +40,102 @@ def _add_base_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--seed", "-s", type=int, default=-1, help="Random seed (-1 = random)")
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress progress output")
+    parser.add_argument(
+        "--stepwise-image-output-dir",
+        default=None,
+        help=(
+            "[EXPERIMENTAL] Every N denoising steps, decode a short window of latent "
+            "frames from the in-progress prediction and write it to this directory as "
+            "a self-contained animated WebP — a couple of seconds of real motion at "
+            "the current denoise quality. One file per step, written once; play them "
+            "back to back for the whole progression. Keeps the VAE decoder resident "
+            "through denoising, which raises peak memory. May change in future versions."
+        ),
+    )
+    parser.add_argument(
+        "--stepwise-interval",
+        type=int,
+        default=1,
+        help="Preview every N denoising steps (default: 1). The final step is always previewed.",
+    )
+    parser.add_argument(
+        "--stepwise-frames",
+        type=int,
+        default=DEFAULT_PREVIEW_FRAMES,
+        help=(
+            f"Latent frames decoded per preview (default: {DEFAULT_PREVIEW_FRAMES}). The VAE "
+            f"upsamples time 8x, so N latent frames yield 8N-7 pixel frames — the default gives "
+            f"{8 * DEFAULT_PREVIEW_FRAMES - 7}, about 2.3 s at 25 fps. Cost is linear in this and "
+            "independent of the clip's length. Set to 1 for a single still and no motion."
+        ),
+    )
+    parser.add_argument(
+        "--stepwise-frame",
+        type=int,
+        default=None,
+        help=(
+            "Latent frame the preview window is centred on (default: the middle of the "
+            "clip). Negative values count from the end, so -1 is the last frame."
+        ),
+    )
+
+
+def _build_stepwise(args: argparse.Namespace):
+    """Build the stepwise preview handler from CLI args, or None when disabled.
+
+    Validates the output directory up front: a bad path should fail in the first
+    second, not minutes later when the first preview is written.
+    """
+    output_dir = getattr(args, "stepwise_image_output_dir", None)
+    if not output_dir:
+        return None
+
+    from pathlib import Path
+
+    from ltx_pipelines_mlx.utils.stepwise import StepwiseConfig, StepwisePreview
+
+    path = Path(output_dir).expanduser()
+    # retake/extend take no --frame-rate; their previews play at the LTX default.
+    frame_rate = float(getattr(args, "frame_rate", None) or 24.0)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".ltx-stepwise-write-test"
+        probe.touch()
+        probe.unlink()
+    except OSError as exc:
+        raise SystemExit(f"--stepwise-image-output-dir {output_dir!r} is not usable: {exc}") from exc
+
+    # Warned unconditionally, not just under --low-ram: previews hold the VAE decoder
+    # and the transformer in memory at the same time, which is the shape of the jetsam
+    # kills fixed in 0.14.19. A jetsam kill is not an exception — the process dies with
+    # no traceback — so the handler's failure containment cannot cover it, and this line
+    # is the only thing that will point a user at previews afterwards.
+    print(
+        "[stepwise] warning: previews keep the VAE decoder resident through denoising, so "
+        "it and the transformer are in memory at once. On a memory-tight machine this can "
+        "get the process killed outright, with no error.",
+        file=sys.stderr,
+        flush=True,
+    )
+    if getattr(args, "low_ram", False):
+        print(
+            "[stepwise] warning: raising peak memory is the opposite of what --low-ram is "
+            "for; consider dropping one of the two.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    return StepwisePreview(
+        StepwiseConfig(
+            output_dir=path,
+            interval=max(1, args.stepwise_interval),
+            frame=args.stepwise_frame,
+            frames=max(1, args.stepwise_frames),
+            frame_rate=frame_rate,
+            seed=args.seed,
+        ),
+        verbose=not args.quiet,
+    )
 
 
 def _build_tile_count_config(args: argparse.Namespace):
@@ -709,6 +807,7 @@ def _cmd_generate(args: argparse.Namespace) -> None:
             tile_count=_build_tile_count_config(args),
         )
         pipe.verbose = not args.quiet
+        pipe.stepwise = _build_stepwise(args)
         if lora_paths:
             pipe._pending_loras = lora_paths
         kwargs: dict = dict(
@@ -749,6 +848,7 @@ def _cmd_generate(args: argparse.Namespace) -> None:
             tile_count=_build_tile_count_config(args),
         )
         pipe.verbose = not args.quiet
+        pipe.stepwise = _build_stepwise(args)
         if lora_paths:
             pipe._pending_loras = lora_paths
         kwargs: dict = dict(
@@ -794,6 +894,7 @@ def _cmd_generate(args: argparse.Namespace) -> None:
             tile_count=_build_tile_count_config(args),
         )
         pipe.verbose = not args.quiet
+        pipe.stepwise = _build_stepwise(args)
         if lora_paths:
             pipe._pending_loras = lora_paths
         # two-stage / HQ accept the upstream-iso multi-image conditioning list.
@@ -860,6 +961,7 @@ def _cmd_a2v(args: argparse.Namespace) -> None:
         low_ram_streaming=getattr(args, "low_ram", False),
     )
     pipe.verbose = not args.quiet
+    pipe.stepwise = _build_stepwise(args)
     kwargs: dict = dict(
         prompt=args.prompt,
         output_path=args.output,
@@ -902,6 +1004,7 @@ def _cmd_retake(args: argparse.Namespace) -> None:
 
     pipe = RetakePipeline(model_dir=args.model, gemma_model_id=args.gemma)
     pipe.verbose = not args.quiet
+    pipe.stepwise = _build_stepwise(args)
     kwargs: dict = dict(
         prompt=args.prompt,
         video_path=args.video,
@@ -939,6 +1042,7 @@ def _cmd_extend(args: argparse.Namespace) -> None:
 
     pipe = RetakePipeline(model_dir=args.model, gemma_model_id=args.gemma)
     pipe.verbose = not args.quiet
+    pipe.stepwise = _build_stepwise(args)
     kwargs: dict = dict(
         prompt=args.prompt,
         video_path=args.video,
@@ -984,6 +1088,7 @@ def _cmd_keyframe(args: argparse.Namespace) -> None:
         distilled_lora_strength=args.lora_strength,
     )
     pipe.verbose = not args.quiet
+    pipe.stepwise = _build_stepwise(args)
     # Build guider params (defaults match reference LTX_2_3_PARAMS)
     from ltx_core_mlx.components.guiders import MultiModalGuiderParams
 
@@ -1067,6 +1172,7 @@ def _cmd_ic_lora(args: argparse.Namespace) -> None:
         distilled_lora_strength=getattr(args, "distilled_lora_strength", 0.5),
     )
     pipe.verbose = not args.quiet
+    pipe.stepwise = _build_stepwise(args)
 
     if not args.quiet and pipe.dev_mode:
         # _effective_lora_paths resolves + validates the distilled LoRA (raises
@@ -1118,6 +1224,7 @@ def _cmd_lipdub(args: argparse.Namespace) -> None:
         low_ram_streaming=getattr(args, "low_ram", False),
     )
     pipe.verbose = not args.quiet
+    pipe.stepwise = _build_stepwise(args)
     pipe.generate_and_save(
         prompt=args.prompt,
         output_path=args.output,
@@ -1157,6 +1264,7 @@ def _cmd_hdr_ic_lora(args: argparse.Namespace) -> None:
         low_ram_streaming=getattr(args, "low_ram", False),
     )
     pipe.verbose = not args.quiet
+    pipe.stepwise = _build_stepwise(args)
 
     pipe.generate_and_save(
         prompt=args.prompt,
