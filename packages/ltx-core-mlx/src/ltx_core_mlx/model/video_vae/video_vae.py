@@ -24,10 +24,12 @@ via :func:`~ltx_2_mlx.model.video_vae.ops.remap_encoder_weight_keys`.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import subprocess
 from collections.abc import Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 import mlx.core as mx
@@ -56,6 +58,78 @@ from ltx_core_mlx.utils.ffmpeg import find_ffmpeg
 from ltx_core_mlx.utils.memory import aggressive_cleanup
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+
+def _write_all(buffer: memoryview, stream: Any) -> None:
+    """Write a contiguous buffer completely without materializing ``bytes``.
+
+    ``BufferedWriter.write`` normally accepts the exported MLX buffer directly,
+    but the explicit loop also handles short writes without a fallback copy.
+    """
+    view = memoryview(buffer).cast("B")
+    try:
+        while view:
+            written = stream.write(view)
+            # A stream that reports neither progress nor an error would spin
+            # this loop forever. That is a broken stream implementation, not a
+            # closed pipe, so it does not raise BrokenPipeError.
+            if written is None or written <= 0:
+                raise OSError(
+                    f"stream.write() reported {written!r} bytes written; "
+                    f"cannot make progress on {len(view)} remaining bytes"
+                )
+            view = view[written:]
+    finally:
+        view.release()
+
+
+class _OrderedFrameWriter:
+    """Serialize evaluated frames with at most one asynchronous write in flight.
+
+    Waiting for the previous write before submitting the next keeps memory bounded
+    and preserves byte order. The worker only sees buffers after ``mx.eval`` has
+    completed, so it never races Metal evaluation.
+    """
+
+    def __init__(self, stream: Any, *, overlap: bool) -> None:
+        self._stream = stream
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ltx-media-writer") if overlap else None
+        self._pending: Future[None] | None = None
+        self.completed = 0
+
+    def _complete_pending(self) -> None:
+        pending, self._pending = self._pending, None
+        if pending is not None:
+            pending.result()
+            self.completed += 1
+
+    def submit(self, buffer: Any) -> None:
+        if self._executor is None:
+            _write_all(memoryview(buffer), self._stream)
+            self.completed += 1
+            return
+
+        self._complete_pending()
+        self._pending = self._executor.submit(_write_all, memoryview(buffer), self._stream)
+
+    def finish(self) -> None:
+        self._complete_pending()
+
+    def shutdown(self) -> None:
+        if self._executor is not None:
+            self._executor.shutdown(wait=True)
+
+
+def _media_write_overlap_enabled() -> bool:
+    """Whether frame writes overlap decode on a worker thread. Off by default.
+
+    The zero-copy write path is unconditional and free. Overlapping the write
+    on a second thread measured 0.8% end to end on a 512x512x25 q8 render,
+    inside run-to-run noise, so it stays opt-in rather than adding concurrency
+    to the decode loop for no measured gain.
+    """
+    value = os.environ.get("LTX2_MEDIA_WRITE_OVERLAP", "0").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _compute_decode_tiling(
@@ -489,38 +563,50 @@ class VideoDecoder(nn.Module):
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         assert proc.stdin is not None
 
-        frames_written = 0
-        pipe_broken = False
-        for chunk in self.tiled_decode(latent, tiling):  # (B, 3, T, H, W)
-            if pipe_broken:
-                break
-            num_frames = chunk.shape[2]
-            for i in range(num_frames):
-                frame = chunk[:, :, i, :, :]
-                frame = mx.clip(frame, -1.0, 1.0)
-                frame = ((frame + 1.0) * 127.5).astype(mx.uint8)
-                frame_hwc = frame[0].transpose(1, 2, 0)  # (H, W, 3)
-                mx.eval(frame_hwc)  # required: memoryview races GPU writes without this sync
+        frame_writer = _OrderedFrameWriter(proc.stdin, overlap=_media_write_overlap_enabled())
+        try:
+            for chunk in self.tiled_decode(latent, tiling):  # (B, 3, T, H, W)
+                num_frames = chunk.shape[2]
+                for i in range(num_frames):
+                    frame = chunk[:, :, i, :, :]
+                    frame = mx.clip(frame, -1.0, 1.0)
+                    frame = ((frame + 1.0) * 127.5).astype(mx.uint8)
+                    frame_hwc = mx.contiguous(frame[0].transpose(1, 2, 0))  # (H, W, 3)
+                    mx.eval(frame_hwc)  # required before a worker exports the unified-memory buffer
+                    frame_writer.submit(frame_hwc)
+                    del frame, frame_hwc
+                    if i % 8 == 0:
+                        aggressive_cleanup()
+                del chunk
+                aggressive_cleanup()
+            frame_writer.finish()
+        except BrokenPipeError:
+            logger.warning(
+                "ffmpeg pipe closed after %d frames (expected %d); output may be truncated",
+                frame_writer.completed,
+                latent.shape[2] * 8 - 7,
+            )
+        finally:
+            # Subprocess teardown belongs here, not after the try: a write error
+            # other than a closed pipe (a stalled stream raises OSError) would
+            # otherwise propagate past this point and leave ffmpeg running until
+            # garbage collection.
+            try:
+                frame_writer.shutdown()
+            finally:
+                # Reaping ffmpeg does not depend on how the writer shut down.
+                # Executor.shutdown() does not surface worker exceptions today,
+                # so this nesting is currently unreachable; it is structural so
+                # that a writer that starts raising cannot leak the process.
                 try:
-                    proc.stdin.write(bytes(memoryview(frame_hwc)))
-                except BrokenPipeError:
-                    logger.warning(
-                        "ffmpeg pipe closed after %d frames (expected %d); output may be truncated",
-                        frames_written,
-                        latent.shape[2] * 8 - 7,
-                    )
-                    pipe_broken = True
-                    break
-                frames_written += 1
-                del frame, frame_hwc
-                if i % 8 == 0:
+                    if proc.stdin and not proc.stdin.closed:
+                        # ffmpeg may already have exited, and closing flushes
+                        # buffered bytes into a dead pipe.
+                        with contextlib.suppress(BrokenPipeError):
+                            proc.stdin.close()
+                finally:
+                    proc.wait()
                     aggressive_cleanup()
-            del chunk
-            aggressive_cleanup()
-        if proc.stdin and not proc.stdin.closed:
-            proc.stdin.close()
-        proc.wait()
-        aggressive_cleanup()
 
 
 class VideoEncoder(nn.Module):
