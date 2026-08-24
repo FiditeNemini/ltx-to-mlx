@@ -70,6 +70,13 @@ class LTXModelConfig:
     positional_embedding_max_pos: tuple[int, ...] = (20, 2048, 2048)
     audio_positional_embedding_max_pos: tuple[int, ...] = (20,)
     norm_eps: float = 1e-6
+    # 2.5 fields, read from the checkpoint config. Defaults reproduce 2.3
+    # exactly — the mapping and defaults mirror upstream model_configurator.py.
+    ff_bias: bool = True
+    audio_ff_bias: bool = True
+    use_prompt_adaln_single: bool = True
+    use_keyframes_abs_pos_embedding: bool = False
+    double_precision_rope: bool = False
 
     @classmethod
     def from_checkpoint_config(cls, config: dict) -> LTXModelConfig:
@@ -96,6 +103,10 @@ class LTXModelConfig:
         """
         t = config.get("transformer", config)
         d = cls()
+        if t.get("share_ff", False):
+            raise ValueError(
+                "share_ff=true is not supported (upstream asserts it False; no shipped checkpoint sets it)"
+            )
         return cls(
             num_layers=t.get("num_layers", d.num_layers),
             video_dim=t.get("cross_attention_dim", d.video_dim),
@@ -117,6 +128,11 @@ class LTXModelConfig:
                 t.get("audio_positional_embedding_max_pos", d.audio_positional_embedding_max_pos)
             ),
             norm_eps=t.get("norm_eps", d.norm_eps),
+            ff_bias=t.get("ff_bias", d.ff_bias),
+            audio_ff_bias=t.get("audio_ff_bias", d.audio_ff_bias),
+            use_prompt_adaln_single=t.get("use_prompt_adaln_single", d.use_prompt_adaln_single),
+            use_keyframes_abs_pos_embedding=t.get("use_keyframes_abs_pos_embedding", d.use_keyframes_abs_pos_embedding),
+            double_precision_rope=t.get("frequencies_precision", "") == "float64",
         )
 
     @classmethod
@@ -188,6 +204,15 @@ class LTXModel(nn.Module):
         self.scale_shift_table = mx.zeros((2, vd))
         self.audio_scale_shift_table = mx.zeros((2, ad))
 
+        # Marks tokens whose latent encodes a single standalone pixel frame.
+        # Zero-initialized, so a checkpoint that predates it behaves
+        # identically until the parameter is trained. Applied by the keyframe
+        # conditioning path (not in this forward) — mirror of upstream
+        # model.py. Only created when the checkpoint config asks for it, so
+        # 2.3 checkpoints keep their exact parameter tree.
+        if config.use_keyframes_abs_pos_embedding:
+            self.keyframes_abs_pos_embedding = mx.zeros((1, vd))
+
         # --- Timestep AdaLN (9-param: self-attn shift/scale/gate x3) ---
         self.adaln_single = AdaLayerNormSingle(vd, num_params=9, timestep_dim=t_dim)
         self.audio_adaln_single = AdaLayerNormSingle(ad, num_params=9, timestep_dim=t_dim)
@@ -215,6 +240,8 @@ class LTXModel(nn.Module):
                 av_cross_head_dim=config.av_cross_head_dim,
                 ff_mult=config.ff_mult,
                 norm_eps=config.norm_eps,
+                ff_bias=config.ff_bias,
+                audio_ff_bias=config.audio_ff_bias,
             )
             for _ in range(config.num_layers)
         ]
@@ -625,6 +652,7 @@ class LTXModel(nn.Module):
             theta=self.config.rope_theta,
             max_pos=max_pos,
             rope_type=self.config.rope_type,
+            double_precision=self.config.double_precision_rope,
         )
 
 

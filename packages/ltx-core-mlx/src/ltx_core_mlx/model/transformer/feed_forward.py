@@ -5,6 +5,12 @@ Ported from ltx-core/src/ltx_core/model/transformer/feed_forward.py
 Weight keys (relative to parent ``ff`` or ``audio_ff``):
     ``proj_in.{weight,bias}``  -- input projection with GELU (tanh approx)
     ``proj_out.{weight,bias}`` -- output projection
+
+The ``.bias`` keys are present only when the layer was constructed with
+``bias=True`` (LTX-2.3 default). LTX-2.5 packs set ``ff_bias=False`` /
+``audio_ff_bias=False`` in ``embedded_config.json``, in which case
+``proj_in``/``proj_out`` have no bias tensors at all — see
+``LTXModelConfig.ff_bias`` / ``audio_ff_bias``.
 """
 
 from __future__ import annotations
@@ -21,12 +27,12 @@ class FeedForward(nn.Module):
     Weight keys: ``proj_in.{weight,bias}``, ``proj_out.{weight,bias}``
     """
 
-    def __init__(self, dim: int, dim_out: int | None = None, mult: float = 4.0):
+    def __init__(self, dim: int, dim_out: int | None = None, mult: float = 4.0, bias: bool = True):
         super().__init__()
         dim_out = dim_out or dim
         inner_dim = int(dim * mult)
-        self.proj_in = nn.Linear(dim, inner_dim)
-        self.proj_out = nn.Linear(inner_dim, dim_out)
+        self.proj_in = nn.Linear(dim, inner_dim, bias=bias)
+        self.proj_out = nn.Linear(inner_dim, dim_out, bias=bias)
 
     def __call__(self, x: mx.array) -> mx.array:
         return self.proj_out(nn.gelu_approx(self.proj_in(x)))
