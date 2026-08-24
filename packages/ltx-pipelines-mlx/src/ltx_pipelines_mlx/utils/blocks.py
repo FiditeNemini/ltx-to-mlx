@@ -42,6 +42,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import mlx.core as mx
 
@@ -53,9 +54,13 @@ from ltx_core_mlx.model.video_vae.video_vae import VideoDecoder as _VideoVAEDeco
 from ltx_core_mlx.model.video_vae.video_vae import VideoEncoder as _VideoVAEEncoder
 from ltx_core_mlx.model.video_vae.video_vae import _compute_decode_tiling
 from ltx_core_mlx.text_encoders.gemma.encoders.base_encoder import GemmaLanguageModel
+from ltx_core_mlx.text_encoders.gemma.encoders.encoder_configurator import select_text_encoder
 from ltx_core_mlx.text_encoders.gemma.feature_extractor import GemmaFeaturesExtractorV2
 from ltx_core_mlx.utils.memory import aggressive_cleanup
 from ltx_core_mlx.utils.weights import load_split_safetensors, remap_audio_vae_keys
+
+if TYPE_CHECKING:
+    from ltx_core_mlx.text_encoders.gemma.encoders.gemma4_encoder import Gemma4TextEncoder
 
 _materialize = getattr(mx, "eval")  # noqa: B009 -- security hook flags the literal mx.eval pattern
 
@@ -85,14 +90,27 @@ class PromptEncoder:
     ) -> None:
         self.model_dir = _resolve_model_dir(model_dir)
         self.gemma_model_id = gemma_model_id
-        self._text_encoder: GemmaLanguageModel | None = None
+        self._text_encoder: GemmaLanguageModel | Gemma4TextEncoder | None = None
         self._feature_extractor: GemmaFeaturesExtractorV2 | None = None
+        self._encoder_kind: str | None = None
 
     def load(self) -> None:
         """Load Gemma + connector if not already loaded."""
+        # Recomputed unconditionally (not just inside the "text encoder unset"
+        # branch below) so a stale _encoder_kind from a prior partial-free
+        # state can never skip the gemma4 projection merge further down.
+        self._encoder_kind = select_text_encoder(self.model_dir)
         if self._text_encoder is None:
-            self._text_encoder = GemmaLanguageModel()
-            self._text_encoder.load(self.gemma_model_id)
+            if self._encoder_kind == "gemma4":
+                # LTX-2.5 pack: Gemma 4 unified tower ships in the DiT pack
+                # itself -- pack-local load, no mlx-community download.
+                from ltx_core_mlx.text_encoders.gemma.encoders.gemma4_encoder import Gemma4TextEncoder
+
+                self._text_encoder = Gemma4TextEncoder()
+                self._text_encoder.load(self.model_dir)
+            else:
+                self._text_encoder = GemmaLanguageModel()
+                self._text_encoder.load(self.gemma_model_id)
             aggressive_cleanup()
 
         if self._feature_extractor is None:
@@ -104,6 +122,20 @@ class PromptEncoder:
             double_precision_rope = LTXModelConfig.from_checkpoint_dir(self.model_dir).double_precision_rope
             self._feature_extractor = GemmaFeaturesExtractorV2(double_precision_rope=double_precision_rope)
             connector_weights = load_split_safetensors(self.model_dir / "connector.safetensors", prefix="connector.")
+            if self._encoder_kind == "gemma4":
+                # The 2.5 pack's connector.safetensors carries only the two
+                # Embeddings1DConnector transformer stacks
+                # (video/audio_embeddings_connector); the
+                # text_embedding_projection.{video,audio}_aggregate_embed
+                # tensors that TextEncoderConnector also needs ship inside
+                # text_encoder.safetensors instead (see the allowlist note
+                # in gemma4.py). Pull them in here and merge under the same
+                # key GemmaFeaturesExtractorV2.connector expects.
+                projection_weights = load_split_safetensors(
+                    self.model_dir / "text_encoder.safetensors",
+                    prefix="text_encoder.text_embedding_projection.",
+                )
+                connector_weights.update({f"text_embedding_projection.{k}": v for k, v in projection_weights.items()})
             self._feature_extractor.connector.load_weights(list(connector_weights.items()))
             aggressive_cleanup()
 
