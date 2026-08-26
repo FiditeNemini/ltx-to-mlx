@@ -34,6 +34,7 @@ from ltx_core_mlx.utils.positions import compute_audio_positions, compute_audio_
 from ltx_core_mlx.utils.weights import load_split_safetensors
 from ltx_pipelines_mlx._base import BasePipeline
 from ltx_pipelines_mlx.scheduler import STAGE_2_SIGMAS, ltx2_schedule
+from ltx_pipelines_mlx.utils.generation import is_ltx25_pack
 from ltx_pipelines_mlx.utils.helpers import create_noised_state
 from ltx_pipelines_mlx.utils.samplers import denoise_loop, guided_denoise_loop
 
@@ -98,23 +99,21 @@ class TI2VidTwoStagesPipeline(BasePipeline):
     Stage 1: Dev model + CFG guidance at half resolution (Euler sampler).
     Stage 2: Dev + distilled LoRA fused, simple denoising at full resolution.
 
-    Requires ``dev_transformer`` and ``distilled_lora`` — the two-stage pipeline
-    needs the dev model for quality generation at half resolution with CFG.
+    Needs the dev model for quality generation at half resolution with CFG;
+    the distilled LoRA is auto-resolved from the pack when not given
+    explicitly (see ``distilled_lora`` below).
 
     Args:
         model_dir: Path to model weights or HuggingFace repo ID.
         gemma_model_id: Gemma model for text encoding.
         low_memory: Aggressive memory management.
         dev_transformer: Dev transformer filename (e.g. ``transformer-dev.safetensors``).
-        distilled_lora: Distilled LoRA filename for Stage 2.
+        distilled_lora: Distilled LoRA filename for Stage 2. When ``None`` (default),
+            auto-resolved based on pack version:
+            ``ltx-2.5-22b-distilled-lora-450-bf16.safetensors`` for LTX-2.5 packs,
+            ``ltx-2.3-22b-distilled-lora-384.safetensors`` for LTX-2.3 packs.
         distilled_lora_strength: LoRA fusion strength (default 1.0).
     """
-
-    #: Whether the checkpoint is an LTX-2.5 weight pack. Resolved once per
-    #: pipeline instance by the subclasses that support 2.5 packs (currently
-    #: :class:`~ltx_pipelines_mlx.distilled.DistilledPipeline`); the class
-    #: default keeps every other two-stage pipeline on the 2.3 behaviour.
-    _is_25: bool = False
 
     def __init__(
         self,
@@ -123,10 +122,26 @@ class TI2VidTwoStagesPipeline(BasePipeline):
         low_memory: bool = True,
         low_ram_streaming: bool = False,
         dev_transformer: str = "transformer-dev.safetensors",
-        distilled_lora: str = "ltx-2.3-22b-distilled-lora-384.safetensors",
+        distilled_lora: str | None = None,
         distilled_lora_strength: float = 1.0,
         tile_count=None,
-    ):
+    ) -> None:
+        """Initialize the two-stage pipeline.
+
+        Args:
+            model_dir: Path to model weights or HuggingFace repo ID.
+            gemma_model_id: Gemma model for text encoding.
+            low_memory: Aggressive memory management.
+            low_ram_streaming: Stream transformer blocks from disk.
+            dev_transformer: Dev transformer filename.
+            distilled_lora: Distilled LoRA filename for Stage 2. When ``None``
+                (default), auto-resolved based on pack version:
+                ``ltx-2.5-22b-distilled-lora-450-bf16.safetensors`` for LTX-2.5
+                packs, ``ltx-2.3-22b-distilled-lora-384.safetensors`` for
+                LTX-2.3 packs.
+            distilled_lora_strength: LoRA fusion strength (default 1.0).
+            tile_count: Optional tiling configuration.
+        """
         super().__init__(
             model_dir,
             gemma_model_id=gemma_model_id,
@@ -134,6 +149,13 @@ class TI2VidTwoStagesPipeline(BasePipeline):
             low_ram_streaming=low_ram_streaming,
         )
         self._dev_transformer = dev_transformer
+        self._is_25 = is_ltx25_pack(self.model_dir)
+        if distilled_lora is None:
+            distilled_lora = (
+                "ltx-2.5-22b-distilled-lora-450-bf16.safetensors"
+                if self._is_25
+                else "ltx-2.3-22b-distilled-lora-384.safetensors"
+            )
         self._distilled_lora = distilled_lora
         self._distilled_lora_strength = distilled_lora_strength
         self._tile_count = tile_count
@@ -383,6 +405,8 @@ class TI2VidTwoStagesPipeline(BasePipeline):
         Returns:
             Tuple of (video_latent, audio_latent) at full resolution.
         """
+        self._check_teacache_supported(enable_teacache)
+
         # --- Text encoding (Prompt Relay: encode the combined prompt; the negative
         # prompt is a fixed default, so it is unaffected by the local prompts) ---
         encode_prompt, relay_token_ranges = self._prompt_relay_setup(prompt, prompt_relay)

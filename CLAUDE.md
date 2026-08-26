@@ -932,7 +932,8 @@ End-to-end run on M2 Pro 32 GB, dev model + HDR LoRA fused, q8:
 LTX-2.5 pack. No new CLI flag — generation is auto-detected from the pack's
 `embedded_config.json` (`ff_bias is False` ⇔ 2.5) via
 `is_ltx25_pack()`/`LTXModelConfig.from_checkpoint_dir()`, resolved once in
-`DistilledPipeline.__init__` as `self._is_25`. The pack carries its own
+`TI2VidTwoStagesPipeline.__init__` (declared as `_is_25: bool = False` on
+`BasePipeline`, inherited by `DistilledPipeline`) as `self._is_25`. The pack carries its own
 Gemma-4 text encoder (`text_encoder.safetensors` + `text_encoder_config.json`,
 selected by `select_text_encoder()`) — no `mlx-community` Gemma 3 download on
 that path. 2.3 packs are byte-identical to before.
@@ -944,18 +945,34 @@ that path. 2.3 packs are byte-identical to before.
 - Ancestral noise is seeded from `seed + ANCESTRAL_NOISE_SEED_OFFSET` (10000) to decorrelate from the initial-latent draw.
 - Stage 2 upscaler resolves to `spatial_upscaler_x2_v1_0.safetensors` (vs `v1_1` on 2.3), falling back to the 2.3 stems; hard error only when none exists (#42 style).
 
-### v1 limits (2.5 packs, `generate --distilled` only)
+### Two-Stage on LTX-2.5
+
+`generate --two-stage --model <2.5-pack-dir>` runs the dev model + CFG
+two-stage pipeline (half-res Stage 1 → upsample → distilled Stage 2 refine)
+end-to-end on a local LTX-2.5 pack, same `is_ltx25_pack()` auto-detection as
+the distilled path. T2V and I2V (`--image`) both work. `--two-stages-hq`
+(res_2s sampler) stays unvalidated on 2.5 packs — its TeaCache guard exists,
+but the HQ pipeline itself hasn't been exercised end-to-end yet.
+
+```bash
+ltx-2-mlx generate --model /path/to/ltx-2.5-mlx-q8 --two-stage --low-ram \
+  -p "a heavy wooden door creaks slowly open" -H 512 -W 512 -f 49 \
+  --frame-rate 24 -o out.mp4
+```
+
+### v1 limits (2.5 packs)
 
 | Feature | Status |
 |---|---|
-| `--two-stage` / `--two-stages-hq` (dev model + CFG) | not yet supported |
+| `--two-stage` (dev model + CFG) | supported (see above) |
+| `--two-stages-hq` (res_2s + CFG) | not yet supported |
 | `a2v`, `keyframe`, `ic-lora`, `hdr-ic-lora`, `retake`, `extend`, `lipdub` | not yet supported |
 | `enhance` / `--enhance-prompt` | raises `NotImplementedError` (`_guard_enhance_not_gemma4`) — Gemma 3 only |
 | `--enable-teacache` | raises `ValueError` — 2.3 polynomial isn't calibrated for 2.5 |
 | Modality tiling, Prompt Relay | validated on 2.3 only |
 | Diffusion (`DiffVAEMode`) VAE decoder | not loaded — conv `vae_decoder_conv` used (see Weight Format) |
 
-Further 2.5 pipelines (two-stage, a2v, keyframe, ic-lora, ...) land in
+Further 2.5 pipelines (`--two-stages-hq`, a2v, keyframe, ic-lora, ...) land in
 subsequent releases behind the same pack-evidence detection.
 
 ### Key Files
@@ -963,7 +980,7 @@ subsequent releases behind the same pack-evidence detection.
 - `packages/ltx-pipelines-mlx/src/ltx_pipelines_mlx/distilled.py` — `DistilledPipeline` (2.3/2.5 dispatch), `ANCESTRAL_*` constants.
 - `packages/ltx-pipelines-mlx/src/ltx_pipelines_mlx/utils/generation.py` — `is_ltx25_pack()`.
 - `packages/ltx-core-mlx/src/ltx_core_mlx/text_encoders/gemma/encoders/encoder_configurator.py` — `select_text_encoder()`, `check_gemma_version()`.
-- `packages/ltx-pipelines-mlx/src/ltx_pipelines_mlx/ti2vid_two_stages.py` — `_resolve_upsampler_path()` (`_is_25` class attribute, default `False`).
+- `packages/ltx-pipelines-mlx/src/ltx_pipelines_mlx/ti2vid_two_stages.py` — `_resolve_upsampler_path()` (`_is_25` resolved in `__init__` via `is_ltx25_pack`; the `_is_25: bool = False` class attribute lives on `BasePipeline`).
 - `tests/test_ltx25_distilled.py` — routing, sigma-table, TeaCache-guard, upsampler-resolution tests.
 
 ---
