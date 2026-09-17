@@ -10,6 +10,13 @@ version: breaking changes bump `y`, additive changes bump `z`. See
 [`docs/PIPELINE_MATURITY.md`](docs/PIPELINE_MATURITY.md) for per-pipeline
 stability guarantees.
 
+## [0.15.6](https://github.com/dgrauet/ltx-2-mlx/compare/v0.15.5...v0.15.6) (2026-09-17)
+
+
+### Features
+
+* **core:** diffusion video decoder for LTX-2.5 (opt-in, single tile) ([#139](https://github.com/dgrauet/ltx-2-mlx/issues/139)) ([b88e35e](https://github.com/dgrauet/ltx-2-mlx/commit/b88e35e275db3a5c066a0581926cac93fc43e330))
+
 ## [0.15.5](https://github.com/dgrauet/ltx-2-mlx/compare/v0.15.4...v0.15.5) (2026-09-14)
 
 
