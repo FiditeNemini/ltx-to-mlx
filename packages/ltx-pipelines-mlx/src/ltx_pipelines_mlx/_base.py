@@ -81,6 +81,10 @@ class BasePipeline:
     #: with no audio track (``generate --no-audio``, #126). Set by the CLI
     #: after construction, like ``verbose`` / ``stepwise``. Video is unchanged.
     generate_audio: bool = True
+    #: Video VAE decoder backend -- ``"conv"`` (default) or ``"diffusion"``
+    #: (LTX-2.5 ``NADiffusionDecoder``, opt-in, ``generate --video-decoder``).
+    #: Set by the CLI after construction, like ``generate_audio`` / ``verbose``.
+    video_decoder: str = "conv"
     #: ``(B, C, K, H, W)`` latent of the generated keyframe slots from the last
     #: stage-1 run (``generate --num-generated-keyframes``), or ``None``. Not
     #: decoded by the standard pipelines; kept for keyframe-aware consumers (DFR).
@@ -378,11 +382,13 @@ class BasePipeline:
 
         The audio block stays unloaded when ``generate_audio`` is ``False``.
         """
+        self.video_decoder_block.video_decoder = self.video_decoder
+        diffusion_suffix = " diffusion" if self.video_decoder == "diffusion" else ""
         if not self.generate_audio:
-            with phase("Loading decoders (VAE only, --no-audio)", verbose=self.verbose):
+            with phase(f"Loading decoders (VAE{diffusion_suffix} only, --no-audio)", verbose=self.verbose):
                 self.video_decoder_block.load()
             return
-        with phase("Loading decoders (VAE + audio + vocoder)", verbose=self.verbose):
+        with phase(f"Loading decoders (VAE{diffusion_suffix} + audio + vocoder)", verbose=self.verbose):
             self.video_decoder_block.load()
             self.audio_decoder_block.load()
 
@@ -515,6 +521,7 @@ class BasePipeline:
         output_path: str,
         *,
         frame_rate: float,
+        seed: int = 0,
     ) -> str:
         """Inheritance wrapper around :func:`utils._orchestration.decode_and_save_video`."""
         from ltx_pipelines_mlx.utils._orchestration import decode_and_save_video as _impl
@@ -540,6 +547,7 @@ class BasePipeline:
                 frame_rate=frame_rate,
                 low_memory=self.low_memory,
                 generate_audio=self.generate_audio,
+                seed=seed,
             )
 
     # ------------------------------------------------------------------

@@ -23,6 +23,7 @@ import sys
 import time
 from typing import TYPE_CHECKING
 
+from ltx_pipelines_mlx.utils.blocks import VIDEO_DECODER_CHOICES
 from ltx_pipelines_mlx.utils.stepwise import DEFAULT_PREVIEW_FRAMES
 
 if TYPE_CHECKING:
@@ -295,6 +296,48 @@ def _resolve_num_frames_arg(args: argparse.Namespace) -> int | AutoDuration:
     return DEFAULT_AUTO_DURATION
 
 
+def _require_diffusion_decoder_preconditions(args: argparse.Namespace, model_dir: str) -> None:
+    """Reject an unusable ``--video-decoder diffusion`` request before any generation runs.
+
+    Both diffusion-specific failure modes (the pack has no
+    ``vae_decoder_av.safetensors``, or the target exceeds the stage-5 token
+    guard) otherwise only surface at decode time, after a full 20-minute
+    generation. Mirrors the ``require_num_frames_source`` fail-fast precedent.
+
+    Args:
+        args: Parsed ``generate`` arguments (``height``/``width``/frames/decoder).
+        model_dir: The ``--model`` value (HF repo id or local path).
+
+    Raises:
+        FileNotFoundError: The resolved pack has no diffusion decoder weights.
+        ValueError: The target latent exceeds the stage-5 token guard.
+    """
+    if getattr(args, "video_decoder", "conv") != "diffusion":
+        return
+
+    from ltx_core_mlx.components.patchifiers import compute_video_latent_shape
+    from ltx_pipelines_mlx.utils.blocks import _DiffusionVideoDecoder, _resolve_model_dir
+
+    path = _resolve_model_dir(model_dir) / "vae_decoder_av.safetensors"
+    if not path.exists():
+        raise FileNotFoundError(f"{path} — the diffusion video decoder ships with LTX 2.5 packs only")
+
+    num_frames = _resolve_num_frames_arg(args)
+    if not isinstance(num_frames, int):
+        # Auto-duration: only an explicit --auto-duration gives a meaningful upper bound.
+        if getattr(args, "auto_duration", None) is None:
+            print(
+                "note: --video-decoder diffusion size check skipped — the frame count is "
+                "auto-predicted; pass -f or --auto-duration MIN:MAX to check it up front.",
+                file=sys.stderr,
+            )
+            return
+        num_frames = int(num_frames.max_seconds * args.frame_rate)
+
+    f, h, w = compute_video_latent_shape(num_frames, args.height, args.width)
+    _DiffusionVideoDecoder.check_size((1, 128, f, h, w))
+
+
 _RETAKE_COST_EPILOG = (
     "Cost note: denoising cost follows the TOTAL clip length, not the size of the "
     "regenerated window -- preserved frames are still computed and attended over on "
@@ -352,6 +395,16 @@ examples:
             "Skip audio decode + mux and write an mp4 with no audio track. "
             "Video generation is unchanged (audio latents are still produced jointly by the DiT); "
             "only the audio VAE / vocoder load and decode are skipped."
+        ),
+    )
+    gen.add_argument(
+        "--video-decoder",
+        choices=VIDEO_DECODER_CHOICES,
+        default="conv",
+        help=(
+            "[experimental] Video VAE decoder: 'conv' (default) or 'diffusion' "
+            "(LTX 2.5 NADiffusionDecoder, sharper, slower, single-tile; needs "
+            "vae_decoder_av.safetensors)"
         ),
     )
     gen.add_argument(
@@ -911,6 +964,10 @@ def _cmd_generate(args: argparse.Namespace) -> None:
     """Generate a video from a text prompt (and optionally a reference image)."""
     t0 = time.time()
 
+    # Fail fast on the diffusion decoder's preconditions: both would otherwise only
+    # surface after the whole generation, at decode time.
+    _require_diffusion_decoder_preconditions(args, args.model)
+
     prompt = _maybe_enhance_prompt(args)
 
     lora_paths = [(path, float(strength)) for path, strength in args.lora] if args.lora else []
@@ -957,6 +1014,7 @@ def _cmd_generate(args: argparse.Namespace) -> None:
         pipe.verbose = not args.quiet
         pipe.stepwise = _build_stepwise(args)
         pipe.generate_audio = not args.no_audio
+        pipe.video_decoder = args.video_decoder
         if lora_paths:
             pipe._pending_loras = lora_paths
         kwargs: dict = dict(
@@ -1000,6 +1058,7 @@ def _cmd_generate(args: argparse.Namespace) -> None:
         pipe.verbose = not args.quiet
         pipe.stepwise = _build_stepwise(args)
         pipe.generate_audio = not args.no_audio
+        pipe.video_decoder = args.video_decoder
         if lora_paths:
             pipe._pending_loras = lora_paths
         kwargs: dict = dict(
@@ -1048,6 +1107,7 @@ def _cmd_generate(args: argparse.Namespace) -> None:
         pipe.verbose = not args.quiet
         pipe.stepwise = _build_stepwise(args)
         pipe.generate_audio = not args.no_audio
+        pipe.video_decoder = args.video_decoder
         if lora_paths:
             pipe._pending_loras = lora_paths
         # two-stage / HQ accept the upstream-iso multi-image conditioning list.

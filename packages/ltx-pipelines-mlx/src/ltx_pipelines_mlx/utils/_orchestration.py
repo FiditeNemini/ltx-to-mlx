@@ -174,6 +174,7 @@ def decode_and_save_video(
     frame_rate: float,
     low_memory: bool = True,
     generate_audio: bool = True,
+    seed: int = 0,
 ) -> str:
     """Decode audio+video latents and mux to mp4 via ffmpeg.
 
@@ -191,11 +192,19 @@ def decode_and_save_video(
             decode entirely and write an mp4 with no audio track. The video
             stream is identical either way: the DiT already produced the
             audio latent jointly, only its decode + mux is skipped.
+        seed: Forwarded to ``video_decoder.decode_and_stream`` only when
+            non-zero, so callers (and stand-in test doubles) that pre-date
+            the diffusion decoder's seeded noise draw keep working
+            unchanged with the default seed. The conv decoder ignores it.
     """
     import tempfile
 
+    decode_kwargs = {"seed": seed} if seed else {}
+
     if not generate_audio:
-        video_decoder.decode_and_stream(video_latent, output_path, frame_rate=frame_rate, audio_path=None)
+        video_decoder.decode_and_stream(
+            video_latent, output_path, frame_rate=frame_rate, audio_path=None, **decode_kwargs
+        )
         aggressive_cleanup()
         return output_path
 
@@ -207,7 +216,9 @@ def decode_and_save_video(
         audio_path = _tmp.name
     save_waveform(waveform, audio_path, sample_rate=48000)
 
-    video_decoder.decode_and_stream(video_latent, output_path, frame_rate=frame_rate, audio_path=audio_path)
+    video_decoder.decode_and_stream(
+        video_latent, output_path, frame_rate=frame_rate, audio_path=audio_path, **decode_kwargs
+    )
 
     Path(audio_path).unlink(missing_ok=True)
     aggressive_cleanup()

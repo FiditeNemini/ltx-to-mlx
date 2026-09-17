@@ -40,6 +40,7 @@ Differences vs upstream:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -52,20 +53,37 @@ from ltx_core_mlx.model.audio_vae.audio_vae import AudioVAEDecoder
 from ltx_core_mlx.model.audio_vae.bwe import VocoderWithBWE
 from ltx_core_mlx.model.transformer.model import LTXModelConfig
 from ltx_core_mlx.model.upsampler.model import LatentUpsampler
+from ltx_core_mlx.model.video_vae.diffusion_decoder import load_diffusion_decoder
 from ltx_core_mlx.model.video_vae.video_vae import VideoDecoder as _VideoVAEDecoder
 from ltx_core_mlx.model.video_vae.video_vae import VideoEncoder as _VideoVAEEncoder
-from ltx_core_mlx.model.video_vae.video_vae import _compute_decode_tiling
+from ltx_core_mlx.model.video_vae.video_vae import (
+    _compute_decode_tiling,
+    _ffmpeg_sink,
+    build_ffmpeg_command,
+    stream_chunks_to_ffmpeg,
+)
 from ltx_core_mlx.text_encoders.gemma.encoders.base_encoder import GemmaLanguageModel
 from ltx_core_mlx.text_encoders.gemma.encoders.encoder_configurator import select_text_encoder
 from ltx_core_mlx.text_encoders.gemma.feature_extractor import GemmaFeaturesExtractorV2
+from ltx_core_mlx.utils.ffmpeg import find_ffmpeg
 from ltx_core_mlx.utils.memory import aggressive_cleanup
 from ltx_core_mlx.utils.weights import load_split_safetensors, remap_audio_vae_keys
 from ltx_pipelines_mlx.utils.types import AutoDuration
 
 if TYPE_CHECKING:
+    from ltx_core_mlx.model.video_vae.diffusion_decoder import NADiffusionDecoder
     from ltx_core_mlx.text_encoders.gemma.encoders.gemma4_encoder import Gemma4TextEncoder
 
 logger = logging.getLogger(__name__)
+
+#: Env var overriding the diffusion decoder's stage-5 token-count guard.
+DIFFVAE_MAX_TOKENS_ENV = "LTX2_DIFFVAE_MAX_TOKENS"
+#: Largest stage-5 token count validated end to end (512x768x49 on an M2 Pro 32 GB:
+#: 49 x 128 x 192). Above it the single-tile decode is unverified; raise via
+#: ``LTX2_DIFFVAE_MAX_TOKENS`` if you have the memory.
+DIFFVAE_MAX_TOKENS_DEFAULT = 1_204_224
+#: Valid ``--video-decoder`` / ``VideoDecoder(video_decoder=...)`` choices.
+VIDEO_DECODER_CHOICES = ("conv", "diffusion")
 
 _materialize = getattr(mx, "eval")  # noqa: B009 -- security hook flags the literal mx.eval pattern
 
@@ -257,21 +275,90 @@ class ImageConditioner:
         return result
 
 
+class _DiffusionVideoDecoder:
+    """Streams a diffusion-decoder decode to ffmpeg through the shared plumbing (single tile in PR A).
+
+    Wraps an :class:`~ltx_core_mlx.model.video_vae.diffusion_decoder.NADiffusionDecoder`
+    and exposes the same ``decode_and_stream`` surface as the conv
+    :class:`~ltx_core_mlx.model.video_vae.video_vae.VideoDecoder`, so
+    :class:`VideoDecoder` can dispatch to either interchangeably.
+    """
+
+    def __init__(self, decoder: NADiffusionDecoder) -> None:
+        self._decoder = decoder
+
+    @staticmethod
+    def estimate_stage5_tokens(latent_shape: tuple[int, ...]) -> int:
+        """Estimate the diffusion decoder's stage-5 token count for a ``(B, C, F, H, W)`` latent shape."""
+        _, _, f, h, w = latent_shape
+        return (8 * f - 7) * (8 * h) * (8 * w)
+
+    @classmethod
+    def check_size(cls, latent_shape: tuple[int, ...]) -> None:
+        """Raise if the stage-5 token count for ``latent_shape`` exceeds the configured guard."""
+        limit = int(os.environ.get(DIFFVAE_MAX_TOKENS_ENV, DIFFVAE_MAX_TOKENS_DEFAULT))
+        tokens = cls.estimate_stage5_tokens(latent_shape)
+        if tokens > limit:
+            raise ValueError(
+                f"diffusion decoder: stage-5 token count {tokens:,} exceeds {DIFFVAE_MAX_TOKENS_ENV}={limit:,} "
+                "(single-tile decode; tiling lands in a follow-up). Lower the resolution / frame count, use "
+                "--video-decoder conv, or raise the limit if you have the memory (~6 x tokens x 512 bytes peak)."
+            )
+
+    def decode_and_stream(
+        self,
+        video_latent: mx.array,
+        output_path: str,
+        frame_rate: float = 24.0,
+        audio_path: str | None = None,
+        *,
+        seed: int = 0,
+    ) -> str:
+        """Stream-decode ``video_latent`` into ``output_path`` with optional audio mux."""
+        self.check_size(tuple(video_latent.shape))
+        _, _, _f, h, w = video_latent.shape
+        sh, sw = self._decoder.spatial_scale
+        cmd = build_ffmpeg_command(find_ffmpeg(), w * sw, h * sh, frame_rate, audio_path, output_path)
+        with _ffmpeg_sink(cmd) as proc:
+            stream_chunks_to_ffmpeg(self._decoder.tiled_decode(video_latent, seed=seed), proc)
+        return output_path
+
+
 class VideoDecoder:
     """Owns the video VAE decoder lifecycle + ffmpeg streaming muxing.
 
     Mirrors upstream ``utils.blocks.VideoDecoder`` (streaming decode +
     audio mux). Use :meth:`decode_and_stream` to decode a latent and
     mux with an audio file in one shot.
+
+    Args:
+        model_dir: Path to model weights or HuggingFace repo ID.
+        verbose: If True, print tiling info to stderr.
+        video_decoder: Which decoder backend to load -- ``"conv"`` (default,
+            the standard causal-conv VAE decoder) or ``"diffusion"`` (the
+            LTX-2.5 ``NADiffusionDecoder``, sharper but slower and
+            single-tile; requires ``vae_decoder_av.safetensors``).
     """
 
-    def __init__(self, model_dir: str | Path, verbose: bool = True) -> None:
+    def __init__(self, model_dir: str | Path, verbose: bool = True, video_decoder: str = "conv") -> None:
+        if video_decoder not in VIDEO_DECODER_CHOICES:
+            raise ValueError(f"video_decoder must be one of {VIDEO_DECODER_CHOICES}, got {video_decoder!r}")
         self.model_dir = _resolve_model_dir(model_dir)
         self.verbose = verbose
-        self._decoder: _VideoVAEDecoder | None = None
+        self.video_decoder = video_decoder
+        self._decoder: _VideoVAEDecoder | _DiffusionVideoDecoder | None = None
 
-    def load(self) -> _VideoVAEDecoder:
+    def load(self) -> _VideoVAEDecoder | _DiffusionVideoDecoder:
         if self._decoder is not None:
+            return self._decoder
+        if self.video_decoder == "diffusion":
+            path = self.model_dir / "vae_decoder_av.safetensors"
+            if not path.exists():
+                raise FileNotFoundError(f"{path} — the diffusion video decoder ships with LTX 2.5 packs only")
+            decoder = load_diffusion_decoder(path)
+            decoder.set_dtype(mx.bfloat16)
+            self._decoder = _DiffusionVideoDecoder(decoder)
+            aggressive_cleanup()
             return self._decoder
         self._decoder = _VideoVAEDecoder()
         decoder_name, _encoder_name = _video_vae_names(self.model_dir)
@@ -290,9 +377,15 @@ class VideoDecoder:
         output_path: str,
         frame_rate: float = 24.0,
         audio_path: str | None = None,
+        *,
+        seed: int = 0,
     ) -> str:
-        """Stream-decode the latent into an mp4 with optional audio mux."""
-        if self.verbose:
+        """Stream-decode the latent into an mp4 with optional audio mux.
+
+        ``seed`` is forwarded to the loaded decoder; the conv decoder ignores
+        it (deterministic), the diffusion decoder uses it to seed its noise draw.
+        """
+        if self.verbose and self.video_decoder == "conv":
             tiling = _compute_decode_tiling(video_latent.shape, frame_rate=frame_rate)
             if tiling is not None and tiling.temporal_config is not None:
                 tc = tiling.temporal_config
@@ -302,7 +395,7 @@ class VideoDecoder:
                     flush=True,
                 )
         decoder = self.load()
-        decoder.decode_and_stream(video_latent, output_path, frame_rate=frame_rate, audio_path=audio_path)
+        decoder.decode_and_stream(video_latent, output_path, frame_rate=frame_rate, audio_path=audio_path, seed=seed)
         return output_path
 
 

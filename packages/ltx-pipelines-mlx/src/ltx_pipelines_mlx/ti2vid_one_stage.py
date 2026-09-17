@@ -349,7 +349,7 @@ class TI2VidOneStagePipeline(TI2VidTwoStagesPipeline):
 
         self._load_decoders()
 
-        result = self._decode_and_save_video(video_latent, audio_latent, output_path, frame_rate=frame_rate)
+        result = self._decode_and_save_video(video_latent, audio_latent, output_path, frame_rate=frame_rate, seed=seed)
 
         if self.low_memory:
             self.vae_decoder = None

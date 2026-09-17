@@ -1081,11 +1081,38 @@ ltx-2-mlx generate --model /path/to/ltx-2.5-mlx-q8 --two-stage --low-ram \
 | `--enable-teacache` | raises `ValueError` — 2.3 polynomial isn't calibrated for 2.5 |
 | Modality tiling, Prompt Relay | validated on 2.3 only |
 | Generated keyframe slots (`--num-generated-keyframes N`) | supported on `generate` (all four modes, stage 1 only); refused up front on 2.3 packs (no `use_keyframes_abs_pos_embedding`) |
-| DFR (`DFRPipeline`), diffusion video decoder (`NADiffusionDecoder`, `vae_decoder_av.safetensors` is already in the packs) | not yet ported — DFR needs the diffusion decoder + `Lightricks/LTX-2.5-22b-IC-LoRA-Pixel-Spatial-Upscaler` |
-| Diffusion (`DiffVAEMode`) VAE decoder | not loaded — conv `vae_decoder_conv` used (see Weight Format) |
+| DFR (`DFRPipeline`) | not yet ported — needs the diffusion decoder (now shipped, see below) + `Lightricks/LTX-2.5-22b-IC-LoRA-Pixel-Spatial-Upscaler` |
+| Diffusion video decoder | opt-in `--video-decoder diffusion` (experimental, single tile, size-guarded); conv remains default |
 
 The IC-LoRA family (`ic-lora` / `hdr-ic-lora` / `lipdub`) lands once
 Lightricks publishes the official 2.5 task IC-LoRAs.
+
+### Diffusion video decoder (`--video-decoder diffusion`, 2.5 packs, experimental)
+
+Port of upstream `NADiffusionDecoder` (`vae_decoder_av.safetensors`, already in every 2.5 pack):
+a Linear-only transformer decoder — four deterministic neighborhood-attention stages on the latent
+grid with pixel-shuffle upsamples, then eight AdaLN-modulated diffusion blocks at pixel/4
+resolution (kernel 11×11×11), one evaluation at `t = 1` on pure noise, `x0` output = pixels.
+Reproduces upstream's **default** `chunked_eager` mode exactly: stage-5 attention runs on four
+width slabs with a 5-cell halo, edge-replicated at the true image borders (the first/last 20 px
+of each row differ from full-volume attention — same as upstream). Neighborhood attention is exact
+blocked dense attention with a boolean window mask (`diffusion_decoder/neighborhood_attention.py`).
+Single tile in v1: `LTX2_DIFFVAE_MAX_TOKENS` (default 1,204,224 stage-5 tokens = 512×768×49, the
+largest shape validated end to end) refuses larger decodes until upstream's tiling is ported. Decoder noise seed = `seed + 30000`; not
+bit-comparable with torch's generator. Parity: per-stage torch goldens
+(`tests/parity_diffvae_reference.py`, disposable env) at 1e-4 (det stages) / 1e-3 (diffusion).
+Conv stays the default. Key files: `model/video_vae/diffusion_decoder/`, `utils/blocks.py::_DiffusionVideoDecoder`.
+
+E2E validated on the 2.5 q8 pack (M2 Pro 32 GB, `--low-ram`, distilled two-stage, seed 5).
+At 384×576×25: conv 93.4s total (2.6s decode phase, ~11.8 GB peak RSS) vs diffusion 129.4s total
+(39.1s decode phase, ~10.4 GB peak RSS); PSNR conv-vs-diffusion 39.25 dB, diffusion frame
+visibly sharper on fine edges (flower petals) at matched latents/seed. Larger diffusion decodes
+also complete: 512×768×25 (614,400 stage-5 tokens) in 175.3s total / 50.8s decode phase /
+~11.3 GB peak RSS, and 512×768×49 (1,204,224 tokens) in 289.8s total / 102.5s decode phase /
+~10.5 GB peak RSS. `na3d` materializes its accumulator once per block group, which bounds live
+Metal buffers and is what lifted the earlier `[metal::malloc] Resource limit (499000) exceeded`
+ceiling. 512×768×49 is the largest shape measured and is now the `LTX2_DIFFVAE_MAX_TOKENS`
+default; beyond it the single-tile decode is unverified (tiling follow-up, PR B).
 
 ### Key Files
 

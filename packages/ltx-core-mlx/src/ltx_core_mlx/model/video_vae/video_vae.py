@@ -259,6 +259,93 @@ def _ffmpeg_sink(cmd: list[str]) -> Iterator[subprocess.Popen[bytes]]:
             raise RuntimeError(f"ffmpeg exited with status {proc.returncode}:\n{tail}")
 
 
+def build_ffmpeg_command(
+    ffmpeg: str,
+    out_w: int,
+    out_h: int,
+    frame_rate: float,
+    audio_path: str | None,
+    output_path: str,
+) -> list[str]:
+    """Build the ffmpeg argv that consumes raw RGB24 frames on stdin and muxes to ``output_path``.
+
+    Args:
+        ffmpeg: Path to the ffmpeg binary.
+        out_w: Output frame width in pixels.
+        out_h: Output frame height in pixels.
+        frame_rate: Output frames per second.
+        audio_path: Optional audio file to mux alongside the video stream.
+        output_path: Destination video file path.
+
+    Returns:
+        Full ffmpeg argv, reading raw video frames from ``-`` / ``pipe:0``.
+    """
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-f",
+        "rawvideo",
+        "-vcodec",
+        "rawvideo",
+        "-s",
+        f"{out_w}x{out_h}",
+        "-pix_fmt",
+        "rgb24",
+        "-r",
+        str(frame_rate),
+        "-i",
+        "-",
+    ]
+    if audio_path:
+        # Do not use -shortest: the reference muxes both streams in full
+        # (ltx_pipelines.utils.media_io writes all video chunks + the entire
+        # audio waveform, no truncation). Reconstructed audio can be slightly
+        # shorter than the video, and -shortest would truncate tail frames on
+        # extend/retake.
+        cmd.extend(["-i", audio_path, "-c:a", "aac"])
+    cmd.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", output_path])
+    return cmd
+
+
+def stream_chunks_to_ffmpeg(chunks: Iterator[mx.array], proc: subprocess.Popen[bytes]) -> None:
+    """Push uint8 RGB frames from ``chunks`` into ``proc.stdin``.
+
+    Args:
+        chunks: Iterator of video chunks ``(B, 3, T, H, W)`` in ``[-1, 1]``.
+        proc: Running ffmpeg process (see :func:`_ffmpeg_sink`); frames are
+            written to ``proc.stdin``.
+    """
+    assert proc.stdin is not None
+    frame_writer = _OrderedFrameWriter(proc.stdin, overlap=_media_write_overlap_enabled())
+    try:
+        for chunk in chunks:  # (B, 3, T, H, W)
+            num_frames = chunk.shape[2]
+            for i in range(num_frames):
+                frame = chunk[:, :, i, :, :]
+                frame = mx.clip(frame, -1.0, 1.0)
+                frame = ((frame + 1.0) * 127.5).astype(mx.uint8)
+                frame_hwc = mx.contiguous(frame[0].transpose(1, 2, 0))  # (H, W, 3)
+                mx.eval(frame_hwc)  # required before a worker exports the unified-memory buffer
+                frame_writer.submit(frame_hwc)
+                del frame, frame_hwc
+                if i % 8 == 0:
+                    aggressive_cleanup()
+            del chunk
+            aggressive_cleanup()
+        frame_writer.finish()
+    except BrokenPipeError:
+        logger.warning(
+            "ffmpeg pipe closed after %d frames; output may be truncated",
+            frame_writer.completed,
+        )
+    finally:
+        # The writer must drain before _ffmpeg_sink closes stdin and reaps
+        # ffmpeg: a write error other than a closed pipe (a stalled stream
+        # raises OSError) propagates from here, and the sink's own finally
+        # still tears the process down.
+        frame_writer.shutdown()
+
+
 class VideoDecoder(nn.Module):
     """Video VAE Decoder with streaming frame output.
 
@@ -544,6 +631,7 @@ class VideoDecoder(nn.Module):
         *,
         frame_rate: float,
         audio_path: str | None = None,
+        seed: int = 0,
     ) -> None:
         """Decode latent and stream frames to ffmpeg.
 
@@ -566,7 +654,11 @@ class VideoDecoder(nn.Module):
             output_path: Path to output video file.
             frame_rate: Output frames per second.
             audio_path: Optional audio file to mux.
+            seed: Unused by the deterministic conv decoder; accepted so callers
+                can pass it uniformly across video-decoder backends (the
+                diffusion decoder uses it to seed its noise draw).
         """
+        del seed
         ffmpeg = find_ffmpeg()
         tiling = _compute_decode_tiling(latent.shape, frame_rate=frame_rate)
         if tiling is not None and tiling.temporal_config is not None:
@@ -582,31 +674,7 @@ class VideoDecoder(nn.Module):
         out_H = H_lat * 32
         out_W = W_lat * 32
 
-        # Build ffmpeg command
-        cmd = [
-            ffmpeg,
-            "-y",
-            "-f",
-            "rawvideo",
-            "-vcodec",
-            "rawvideo",
-            "-s",
-            f"{out_W}x{out_H}",
-            "-pix_fmt",
-            "rgb24",
-            "-r",
-            str(frame_rate),
-            "-i",
-            "-",
-        ]
-        if audio_path:
-            # Do not use -shortest: the reference muxes both streams in full
-            # (ltx_pipelines.utils.media_io writes all video chunks + the entire
-            # audio waveform, no truncation). Reconstructed audio can be slightly
-            # shorter than the video, and -shortest would truncate tail frames on
-            # extend/retake.
-            cmd.extend(["-i", audio_path, "-c:a", "aac"])
-        cmd.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", output_path])
+        cmd = build_ffmpeg_command(ffmpeg, out_W, out_H, frame_rate, audio_path, output_path)
 
         try:
             with _ffmpeg_sink(cmd) as proc:
@@ -616,36 +684,7 @@ class VideoDecoder(nn.Module):
 
     def _stream_frames(self, latent: mx.array, tiling: TilingConfig | None, proc: subprocess.Popen[bytes]) -> None:
         """Decode ``latent`` tile by tile and push uint8 RGB frames into ``proc.stdin``."""
-        assert proc.stdin is not None
-        frame_writer = _OrderedFrameWriter(proc.stdin, overlap=_media_write_overlap_enabled())
-        try:
-            for chunk in self.tiled_decode(latent, tiling):  # (B, 3, T, H, W)
-                num_frames = chunk.shape[2]
-                for i in range(num_frames):
-                    frame = chunk[:, :, i, :, :]
-                    frame = mx.clip(frame, -1.0, 1.0)
-                    frame = ((frame + 1.0) * 127.5).astype(mx.uint8)
-                    frame_hwc = mx.contiguous(frame[0].transpose(1, 2, 0))  # (H, W, 3)
-                    mx.eval(frame_hwc)  # required before a worker exports the unified-memory buffer
-                    frame_writer.submit(frame_hwc)
-                    del frame, frame_hwc
-                    if i % 8 == 0:
-                        aggressive_cleanup()
-                del chunk
-                aggressive_cleanup()
-            frame_writer.finish()
-        except BrokenPipeError:
-            logger.warning(
-                "ffmpeg pipe closed after %d frames (expected %d); output may be truncated",
-                frame_writer.completed,
-                latent.shape[2] * 8 - 7,
-            )
-        finally:
-            # The writer must drain before _ffmpeg_sink closes stdin and reaps
-            # ffmpeg: a write error other than a closed pipe (a stalled stream
-            # raises OSError) propagates from here, and the sink's own finally
-            # still tears the process down.
-            frame_writer.shutdown()
+        stream_chunks_to_ffmpeg(self.tiled_decode(latent, tiling), proc)
 
 
 class VideoEncoder(nn.Module):

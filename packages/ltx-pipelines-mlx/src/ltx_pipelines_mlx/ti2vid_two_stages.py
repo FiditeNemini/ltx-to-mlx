@@ -751,7 +751,7 @@ class TI2VidTwoStagesPipeline(BasePipeline):
         # Load decoders on-demand
         self._load_decoders()
 
-        result = self._decode_and_save_video(video_latent, audio_latent, output_path, frame_rate=frame_rate)
+        result = self._decode_and_save_video(video_latent, audio_latent, output_path, frame_rate=frame_rate, seed=seed)
 
         # Free decoders so a subsequent generate_and_save call on the same
         # pipeline instance doesn't stack DiT (~26 GB q8) on top of decoders
