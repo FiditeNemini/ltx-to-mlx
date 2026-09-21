@@ -170,8 +170,43 @@ def append_ic_lora_reference_video_conditionings(
         conditionings.append(cond)
 
 
+def reference_conditioning_from_latent(
+    latent: mx.array,
+    *,
+    frame_rate: float,
+    downscale_factor: int,
+    strength: float = 1.0,
+) -> VideoConditionByReferenceLatent:
+    """IC-LoRA reference item from an already-encoded ``(1, 128, F, H, W)`` latent.
+
+    The file-based :func:`append_ic_lora_reference_video_conditionings` encodes videos first;
+    DFR conditions its detailing stage on the stage-1 latent it already holds (upstream
+    ``VideoConditionByReferenceLatent(latent=reserved_half_res_video, ...)``).
+
+    Args:
+        latent: Already-encoded video latent, shape ``(1, 128, F, H, W)``.
+        frame_rate: Video frame rate, used to compute pixel-space reference positions.
+        downscale_factor: Spatial downscale factor for the reference (read from the IC-LoRA's
+            safetensors metadata by the caller).
+        strength: Conditioning strength for the reference latent.
+
+    Returns:
+        A :class:`VideoConditionByReferenceLatent` item ready to append to the conditioning list.
+    """
+    _, _, f, h, w = latent.shape
+    tokens = latent.transpose(0, 2, 3, 4, 1).reshape(1, -1, latent.shape[1])
+    positions = compute_video_positions(f, h, w, frame_rate=frame_rate)
+    return VideoConditionByReferenceLatent(
+        reference_latent=tokens,
+        reference_positions=positions,
+        downscale_factor=downscale_factor,
+        strength=strength,
+    )
+
+
 __all__ = [
     "append_ic_lora_reference_video_conditionings",
     "downsample_mask_video_to_latent",
     "read_lora_reference_downscale_factor",
+    "reference_conditioning_from_latent",
 ]
