@@ -33,6 +33,7 @@ from ltx_core_mlx.components.patchifiers import (
 )
 from ltx_core_mlx.conditioning.types.keyframe_slots import extract_generated_keyframes
 from ltx_core_mlx.model.transformer.model import X0Model
+from ltx_core_mlx.model.upsampler import LatentUpsampler
 from ltx_core_mlx.utils.memory import aggressive_cleanup
 from ltx_core_mlx.utils.positions import (
     compute_audio_positions,
@@ -83,7 +84,8 @@ class Stage1Result:
         video_embeds: Video text embeddings from prompt encoding.
         audio_embeds: Audio text embeddings from prompt encoding.
         relay_mask: Prompt Relay cross-attention mask builder.
-        x0_model: The stage 1 X0 model, reused for stage 2 when tiling is off.
+        x0_model: The stage 1 X0 model, reused for stage 2 when tiling is off; ``None`` once
+            released (DFR drops it before its temporal rounds reload a clean DiT).
     """
 
     video_tokens: mx.array
@@ -94,7 +96,7 @@ class Stage1Result:
     video_embeds: mx.array
     audio_embeds: mx.array
     relay_mask: Callable
-    x0_model: X0Model
+    x0_model: X0Model | None
 
 
 class DistilledPipeline(TI2VidTwoStagesPipeline):
@@ -317,6 +319,7 @@ class DistilledPipeline(TI2VidTwoStagesPipeline):
         generated_keyframes: int | Sequence[int],
         enable_teacache: bool,
         canvas_for: Callable[[int], tuple[int, list[int]]] | None = None,
+        video_fps: float | None = None,
     ) -> tuple[Stage1Result, int, int, int]:
         """Encode the prompt and denoise stage 1 at half resolution.
 
@@ -325,7 +328,8 @@ class DistilledPipeline(TI2VidTwoStagesPipeline):
             height: Requested video height (before dimension snapping).
             width: Requested video width (before dimension snapping).
             num_frames: Number of frames, or an :class:`AutoDuration` request.
-            frame_rate: Video frame rate.
+            frame_rate: Video frame rate (used for duration resolution and audio token
+                count/positions).
             seed: Random seed.
             stage1_steps: Stage 1 steps (default: full stage-1 sigma table).
             image: Optional reference image for I2V conditioning.
@@ -338,6 +342,10 @@ class DistilledPipeline(TI2VidTwoStagesPipeline):
                 the clip to whole keyframe segments and place one slot per boundary; the
                 returned canvas length replaces ``num_frames`` for the rest of stage 1 and is
                 what this method returns. ``None`` (every other caller) leaves both untouched.
+            video_fps: Transformer RoPE fps for the video-side positions and conditionings
+                (``compute_video_positions``, ``combined_image_conditionings``,
+                ``generated_keyframe_conditionings``). ``None`` (every caller except
+                :class:`DFRPipeline`) uses ``frame_rate`` -- byte-identical to before.
 
         Returns:
             Tuple of (stage1 result, resolved num_frames, resolved height, resolved width).
@@ -347,6 +355,7 @@ class DistilledPipeline(TI2VidTwoStagesPipeline):
         """
         self._require_num_frames_source(num_frames)
         self._require_generated_keyframes_support(generated_keyframes)
+        video_fps = frame_rate if video_fps is None else video_fps
         if enable_teacache and self._is_25:
             raise ValueError(
                 "TeaCache is not calibrated for LTX-2.5 packs: the polynomial "
@@ -393,7 +402,7 @@ class DistilledPipeline(TI2VidTwoStagesPipeline):
         audio_T = compute_audio_token_count(num_frames, frame_rate=frame_rate)
         audio_shape = (1, audio_T, 128)
 
-        video_positions_1 = compute_video_positions(F, H_half, W_half, frame_rate=frame_rate)
+        video_positions_1 = compute_video_positions(F, H_half, W_half, frame_rate=video_fps)
         audio_positions = compute_audio_positions(audio_T)
 
         # I2V conditioning at half resolution. ``images`` is the upstream-iso
@@ -414,11 +423,11 @@ class DistilledPipeline(TI2VidTwoStagesPipeline):
                 enc_w=enc_w_half,
                 spatial_dims=(F, H_half, W_half),
                 video_encoder=self.vae_encoder,
-                frame_rate=frame_rate,
+                frame_rate=video_fps,
             )
         conditionings_1 = [
             *conditionings_1,
-            *generated_keyframe_conditionings(generated_keyframes, num_frames, frame_rate=frame_rate),
+            *generated_keyframe_conditionings(generated_keyframes, num_frames, frame_rate=video_fps),
         ]
 
         video_state = create_noised_state(
@@ -494,19 +503,22 @@ class DistilledPipeline(TI2VidTwoStagesPipeline):
             width,
         )
 
-    def _upsample_latent(self, video_half: mx.array) -> mx.array:
-        """Denormalize, spatially upsample 2x, and renormalize a stage-1 latent.
+    def _upsample_latent(self, video_half: mx.array, upsampler: LatentUpsampler | None = None) -> mx.array:
+        """Denormalize, upsample, and renormalize a stage-1 latent.
 
         Args:
             video_half: Stage 1 video latent, `(1, 128, F, H_half, W_half)`.
+            upsampler: Module to apply between denorm/renorm. `None` uses the
+                spatial `self.upsampler` (unchanged default behaviour).
 
         Returns:
-            Upscaled video latent, `(1, 128, F, 2*H_half, 2*W_half)`, materialized.
+            Upscaled video latent, `(1, 128, F', H', W')`, materialized.
         """
+        up = self.upsampler if upsampler is None else upsampler
         video_mlx = video_half.transpose(0, 2, 3, 4, 1)
         video_denorm = self.vae_encoder.denormalize_latent(video_mlx)
         video_denorm = video_denorm.transpose(0, 4, 1, 2, 3)
-        video_upscaled = self.upsampler(video_denorm)
+        video_upscaled = up(video_denorm)
         video_up_mlx = video_upscaled.transpose(0, 2, 3, 4, 1)
         video_upscaled = self.vae_encoder.normalize_latent(video_up_mlx)
         video_upscaled = video_upscaled.transpose(0, 4, 1, 2, 3)
@@ -523,6 +535,7 @@ class DistilledPipeline(TI2VidTwoStagesPipeline):
         seed: int,
         stage2_steps: int | None,
         extra_conditionings: list,
+        video_fps: float | None = None,
     ) -> tuple[mx.array, mx.array]:
         """Denoise stage 2 at full resolution and unpatchify the result.
 
@@ -530,15 +543,20 @@ class DistilledPipeline(TI2VidTwoStagesPipeline):
             stage1: Result of :meth:`_stage1`.
             video_upscaled: Upscaled video latent from :meth:`_upsample_latent`.
             num_frames: Resolved number of frames.
-            frame_rate: Video frame rate.
+            frame_rate: Video frame rate (used for audio token count/positions).
             seed: Random seed.
             stage2_steps: Stage 2 steps (default: full stage-2 sigma table).
             extra_conditionings: Additional conditioning items appended after the
                 re-encoded I2V anchors (e.g. generated-keyframe slots in later tasks).
+            video_fps: Transformer RoPE fps for the video-side positions and conditionings
+                (``compute_video_positions``, ``combined_image_conditionings``). ``None``
+                (every caller except :class:`DFRPipeline`) uses ``frame_rate`` --
+                byte-identical to before.
 
         Returns:
             Tuple of (video_latent, audio_latent) at full resolution.
         """
+        video_fps = frame_rate if video_fps is None else video_fps
         F, H_half, W_half = stage1.latent_dims
         resolved_images = stage1.resolved_images
         video_embeds = stage1.video_embeds
@@ -562,7 +580,7 @@ class DistilledPipeline(TI2VidTwoStagesPipeline):
                 enc_w=enc_w_full,
                 spatial_dims=(F, H_full, W_full),
                 video_encoder=self.vae_encoder,
-                frame_rate=frame_rate,
+                frame_rate=video_fps,
             )
 
         if self.low_memory:
@@ -579,7 +597,7 @@ class DistilledPipeline(TI2VidTwoStagesPipeline):
         # ``create_noised_state(sigma=...)`` below is that same mechanism.
         start_sigma = sigmas_2[0]
 
-        video_positions_2 = compute_video_positions(F, H_full, W_full, frame_rate=frame_rate)
+        video_positions_2 = compute_video_positions(F, H_full, W_full, frame_rate=video_fps)
         audio_T = compute_audio_token_count(num_frames, frame_rate=frame_rate)
         audio_positions = compute_audio_positions(audio_T)
 

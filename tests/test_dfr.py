@@ -107,6 +107,47 @@ def test_stage2_gets_upsampled_slots_reference_and_detailing_lora(tmp_path, monk
     assert len(euler.calls) == 1
 
 
+def test_stage_positions_use_the_snapped_conditioning_fps(tmp_path, monkeypatch):
+    """Above 30 fps, stage 1/2 video-side RoPE positions and conditionings snap to 60 fps
+    (upstream ``_conditioning_fps``), while the stage-1 audio token count keeps the real
+    playback fps."""
+    from ltx_core_mlx.utils.positions import compute_audio_token_count, compute_video_positions
+
+    pipe, euler, ancestral, noised, _ = _make(tmp_path, monkeypatch)
+    _run(pipe, num_frames=49, frame_rate=48.0)
+
+    stage1_spatial_dims = noised[0]["spatial_dims"]
+    expected_pos_1 = compute_video_positions(*stage1_spatial_dims, frame_rate=60.0)
+    assert mx.array_equal(noised[0]["positions"], expected_pos_1)
+
+    stage2_spatial_dims = noised[2]["spatial_dims"]
+    expected_pos_2 = compute_video_positions(*stage2_spatial_dims, frame_rate=60.0)
+    assert mx.array_equal(noised[2]["positions"], expected_pos_2)
+
+    audio_T = compute_audio_token_count(49, frame_rate=48.0)
+    assert noised[1]["base_shape"][1] == audio_T
+
+    conds = noised[2]["conditionings"]
+    slots = [c for c in conds if isinstance(c, VideoGeneratedKeyframeSlots)]
+    assert slots[0].frame_rate == 60.0
+    refs = [c for c in conds if isinstance(c, VideoConditionByReferenceLatent)]
+    expected_ref_positions = compute_video_positions(*stage1_spatial_dims, frame_rate=60.0)
+    assert mx.array_equal(refs[0].reference_positions, expected_ref_positions)
+
+
+def test_stage_positions_unchanged_at_24fps(tmp_path, monkeypatch):
+    """At 24 fps (<= the 30 fps snap threshold), the conditioning fps equals the playback
+    fps, so nothing changes numerically."""
+    from ltx_core_mlx.utils.positions import compute_video_positions
+
+    pipe, euler, ancestral, noised, _ = _make(tmp_path, monkeypatch)
+    _run(pipe, num_frames=49, frame_rate=24.0)
+
+    stage1_spatial_dims = noised[0]["spatial_dims"]
+    expected_pos_1 = compute_video_positions(*stage1_spatial_dims, frame_rate=24.0)
+    assert mx.array_equal(noised[0]["positions"], expected_pos_1)
+
+
 def test_outputs_are_trimmed_to_the_requested_frames(tmp_path, monkeypatch):
     pipe, *_ = _make(tmp_path, monkeypatch)
     video, audio = _run(pipe, num_frames=137)  # canvas 145 -> 19 latent frames; keep 18
@@ -316,6 +357,53 @@ def test_cli_dfr_rejects_incompatible_flags(tmp_path, bad):
 def test_cli_detailing_lora_requires_dfr(tmp_path):
     with pytest.raises(SystemExit):
         _cmd_generate(_build_parser().parse_args(_argv(tmp_path, "--distilled", "--detailing-lora", "/x.safetensors")))
+
+
+def test_cli_temporal_flags_require_dfr(tmp_path):
+    with pytest.raises(SystemExit, match="--temporal-upscalings"):
+        _cmd_generate(_build_parser().parse_args(_argv(tmp_path, "--distilled", "--temporal-upscalings", "1")))
+    with pytest.raises(SystemExit, match="--temporal-upsampler-path"):
+        _cmd_generate(_build_parser().parse_args(_argv(tmp_path, "--distilled", "--temporal-upsampler-path", "t")))
+
+
+def test_cli_temporal_upscalings_choices(tmp_path):
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(_argv(tmp_path, "--dfr", "--temporal-upscalings", "3"))
+
+
+def test_cli_temporal_flags_reach_the_pipeline(monkeypatch, tmp_path):
+    captured = {}
+
+    class _FakePipe:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+        def generate_and_save(self, **kw):
+            return "o.mp4"
+
+    monkeypatch.setattr(dfr_mod, "DFRPipeline", _FakePipe)
+    upsampler_path = str(tmp_path / "t.safetensors")
+    _cmd_generate(
+        _build_parser().parse_args(
+            _argv(tmp_path, "--dfr", "--temporal-upscalings", "2", "--temporal-upsampler-path", upsampler_path)
+        )
+    )
+    assert captured["temporal_upscalings"] == 2
+    assert captured["temporal_upsampler_path"] == upsampler_path
+
+
+def test_cli_rounds_refuse_segments(tmp_path):
+    with pytest.raises(SystemExit, match="--segment"):
+        _cmd_generate(
+            _build_parser().parse_args(_argv(tmp_path, "--dfr", "--temporal-upscalings", "1", "--segment", "a"))
+        )
+
+
+def test_cli_rounds_refuse_tiling(tmp_path):
+    with pytest.raises(SystemExit, match="--tile"):
+        _cmd_generate(
+            _build_parser().parse_args(_argv(tmp_path, "--dfr", "--temporal-upscalings", "1", "--tile-spatial", "2"))
+        )
 
 
 def test_decode_keyframes_from_slots_filters_the_canvas_padding(capsys):
